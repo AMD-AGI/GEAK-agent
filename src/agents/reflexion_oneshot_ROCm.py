@@ -40,7 +40,7 @@ class Reflexion_Oneshot(Reflexion):
                                                              "reflection", 
                                                              "function_signatures", 
                                                              "oneshot",
-                                                             "pass_call", 
+                                                             "pass_exe", 
                                                             ]):
             pass
         
@@ -62,7 +62,7 @@ class Reflexion_Oneshot(Reflexion):
                                 reflection=None, 
                                 function_signatures=fs_mem, 
                                 oneshot=os_mem["code"],
-                                pass_call=False,
+                                pass_exe=False,
                                 )
             else:
                 input_mem = input_mems[ps.filename]
@@ -71,7 +71,7 @@ class Reflexion_Oneshot(Reflexion):
                                 reflection=input_mem["reflection"], 
                                 function_signatures=fs_mem, 
                                 oneshot=input_mem["oneshot"],
-                                pass_call=input_mem["pass_call"],
+                                pass_exe=input_mem["pass_exe"],
                                 )
             self.memories.append(tmp_mem)
 
@@ -101,37 +101,65 @@ class Reflexion_Oneshot(Reflexion):
                         pbar.update(1)
             
             """
-            Run the scripts to verify whether the generated kernels can execute without errors.
-            To check for correctness against expected outputs, use the test_opt_correctness method from TritonBench.
+            Run the scripts to verify whether the generated kernels are correct.
             """
             logger.info(f"\nrun scripts on gpu")
+            if output_path is None or (hasattr(self.dataset, 'rocm_tests') and self.dataset.rocm_tests):
+                tmp_dir = "tmp"
+                exe_dir = "pass_exe"
+                perf_result_dir = "perf_results"
+                
+            else:
+                root, extension = os.path.splitext(output_path)
+                tmp_dir = f"{root}_tmp"
+                exe_dir = f"{root}_pass_exe"
+                perf_result_dir = f"{root}_perf_results"
+            
             for mem in tqdm(self.memories[:data_len]):
-                if mem.pass_call:
-                    continue
-                is_pass, err_msg = self.dataset.run_single_call(mem.ps)
-                if not is_pass:
-                    mem.err_msg = err_msg
-            """
-            To measure kernel latency, follow these steps:
-
-            self.dataset.write_perf_file(input_folder_path=exe_dir, results_path=perf_result_dir, tmp_dir=script_dir)
-            self.dataset.run_perf_scripts(gpu_id=gpu_id, script_dir=script_dir, log_dir=perf_log_dir)
-
-            for mem in self.memories[:data_len]:
-                path_gen = os.path.join(perf_result_dir, mem.ps.filename[:-3] + ".json")
-                if not os.path.exists(path_gen):
+                if mem.pass_exe:
                     continue
                 try:
-                    _, efficiency, ms = self.dataset.calculate(path_gen, path_ref=None)
-
-                    print(f"{mem.ps.filename}: {ms}")
-                    print(f"{mem.ps.filename}: {efficiency}\n")
-                    
-                    
+                    pass_call, pass_exe, call_stdout, call_stderr, exe_stdout, exe_stderr = self.dataset.test_opt_correctness(mem.ps.solution, mem.ps.filename, tmp_dir, exe_dir=exe_dir)
+                
                 except Exception as e:
-                    print(f"{mem.ps.filename} failed due to {e}")
-
+                    logger.info(f"failed to test the code due to : {e}")
+                    mem.err_msg = f"failed to test the code due to: {e}"
+                    continue
+                if not pass_call:
+                    mem.err_msg = call_stderr
+                elif not pass_exe:
+                    mem.err_msg = exe_stderr
+                else:
+                    mem.pass_exe = True
             """
+            To measure kernel speedup, follow these steps:
+            
+            root, extension = os.path.splitext(output_path)
+            exe_dir = os.path.join(root,exe_dir) if output_path else exe_dir
+            perf_result_dir = os.path.join(root, perf_result_dir) if output_path else perf_result_dir
+
+            if not os.listdir(exe_dir):
+                pass
+                # logger.warning(f"No scripts passed correctness checks in iteration {iter}. Skipping performance evaluation.")
+            else:
+                # run performance evaluation
+                # This block now only runs if there are files to evaluate.
+                
+                perf_results_dict = {}
+
+                perf_results_dict = self.dataset.run_perf_evaluation(
+                    exec_folder=exe_dir, 
+                    gen_perf_folder=perf_result_dir
+                )
+                perf_results_list = list(perf_results_dict.values())
+                # Create a list of memory objects that passed the correctness check
+                passed_mems = [mem for mem in self.memories[:data_len] if mem.pass_exe]
+                assert len(passed_mems) == len(perf_results_list)
+                for mem, perf_data in zip(passed_mems, perf_results_list):
+                    speedup = perf_data.get("ms")
+                    efficiency = perf_data.get("efficiency")
+            """     
+            
 
             # generate reflections
             logger.info(f"\ngenerate reflections")
@@ -152,7 +180,7 @@ class Reflexion_Oneshot(Reflexion):
 
     
     def generate_solution(self, mem, temperature=0):
-        if mem.pass_call:
+        if mem.pass_exe:
             return
         
         tab = "\n"
@@ -188,7 +216,7 @@ class Reflexion_Oneshot(Reflexion):
 
 
     def generate_reflexion(self, mem, temperature):
-        if mem.pass_call:
+        if mem.pass_exe:
             return
         reflect_txt = prompt_for_reflection.prompt.format(
             problem=mem.ps.instruction,

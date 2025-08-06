@@ -18,14 +18,15 @@ class ROCm:
                  instruction_path,
                  log_root,
                  py_interpreter='python3',
-                 result_path=None
+                 result_path=None,
+                 target_kernels=None,
                  ):
         self.statis_path = statis_path
         self.py_folder = py_folder
         self.instruction_path = instruction_path
         # This flag is to identify the dataset type in the agent
         self.rocm_tests = True
-        self.problem_states = self.load_ps()
+        self.problem_states = self.load_ps(target_kernels)
         self.log_root = log_root
         
         # Initialize correctness and performance evaluators from tb_eval
@@ -33,7 +34,7 @@ class ROCm:
         self.perf_evaluator = get_perf_evaluators["rocm"]()
         logger.info("Custom tests path set to: {}".format(self.py_folder))
 
-    def load_ps(self,):
+    def load_ps(self, target_kernels=None):
         problem_states = []
         with open(self.instruction_path, "r", encoding='utf-8') as file:
             instructions = json.load(file)
@@ -49,6 +50,8 @@ class ROCm:
                     file = item["file"]
                     tmp = item
                     break
+            if target_kernels is not None and file not in target_kernels:
+                continue
             if tmp: statis_data.remove(tmp)
             
             path = os.path.join(self.py_folder, file)
@@ -70,8 +73,10 @@ class ROCm:
         return len(self.problem_states)
 
     def write_file(self, file_path, start_idx=0, datalen=None):
+        assert file_path.endswith(".jsonl") or file_path.endswith(".json")
         os.makedirs(os.path.dirname(file_path), exist_ok=True)
         data_len = datalen if datalen is not None else len(self)
+        output_list = []
         with open(file_path, 'w') as f:
             for ps in self.problem_states[start_idx:(start_idx + data_len)]:
                 output = {
@@ -81,7 +86,12 @@ class ROCm:
                     "target_kernel_name": ps.target_kernel_name,
                     "predict": ps.solution if ps.solution else ""
                 }
-                f.write(json.dumps(output) + "\n")
+                if file_path.endswith(".jsonl"):
+                    f.write(json.dumps(output) + "\n")
+                else:
+                    output_list.append(output)
+            if file_path.endswith(".json"):
+                json.dump(output_list, f)
 
     def test_opt_correctness(self, code, filename, tmp_dir="temp", save_scripts=True, exe_dir="pass_exe"):
         tmp_dir = os.path.join(self.log_root, tmp_dir)

@@ -1,0 +1,30 @@
+# LLM model
+api_key: ""
+model_id: "dvue-aoai-001-gpt-4.1"
+temperature: 1.0
+
+# ROCm (Check the paths from GEAK-eval)
+statis_path: "./dataloaders/ROCm_data/ROCm_eval_complex_instruct_v1_hackathon.json"
+py_folder: "./dataloaders/ROCm_data/ROCm_v1"
+instruction_path: "./dataloaders/ROCm_data/ROCm_eval_complex_instruct_v1_hackathon.json"
+corpus_path: "./dataloaders/TB_eval/data/train_crawl.json"
+py_interpreter: "python"
+
+# configs for resuming optimization process
+result_path: null
+mem_file: null
+start_iter: 0
+
+datalen: 2
+start_idx: 0
+# you can specify which kernels you want to generate by setting target_kernels. null means all 8 kernels for hackathon.
+# target_kernels: ["test_chained_matmul.py", "test_batched_vecmat.py", "test_reverse_range.py", "test_block_pointer_matmul.py", "test_tma_store_gemm.py", "test_gemm_no_scf.py", "naive_softmax.py", "test_gemm_fusion.py"]
+target_kernels: null
+
+
+# agent
+output_path: "../outputs/reflexion_oneshot_rocm.json"
+max_iteration: 20
+# set multi_thread to false if you want to debug the process
+multi_thread: false
+ancestor_num: 5

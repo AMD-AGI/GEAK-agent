@@ -54,6 +54,8 @@ class TritonBench:
                         tmp = item
                         break
                 if target_kernels is not None:
+                    if file in target_kernels:
+                        print(file)
                     if file not in target_kernels:
                         continue
                 if tmp:
@@ -93,8 +95,13 @@ class TritonBench:
         return len(self.problem_states)
     
     def write_file(self, file_path, start_idx=0, datalen=None):
+        """
+        write the result into a jsonl or a json file, which can be evaluated by TB-eval
+        """
+        assert file_path.endswith(".jsonl") or file_path.endswith(".json")
         os.makedirs(os.path.dirname(file_path), exist_ok=True)
         data_len = datalen if datalen is not None else len(self)
+        output_list = []
         with open(file_path, 'w') as f:
             for ps in self.problem_states[start_idx:(start_idx + data_len)]:
                 output = {
@@ -108,10 +115,18 @@ class TritonBench:
                     output["predict"] = ps.solution
                 else:
                     output["predict"] = ""
-                f.write(json.dumps(output) + "\n")
+                if file_path.endswith(".jsonl"):
+                    f.write(json.dumps(output) + "\n")
+                else:
+                    output_list.append(output)
+            if file_path.endswith(".json"):
+                json.dump(output_list, f)
     
     @classmethod
     def run_single_call(cls, ps, tmp_dir="temp", gpu_id=0):
+        """
+        Runs the generated kernel to verify that it executes successfully without errors.
+        """
         os.makedirs(tmp_dir, exist_ok=True)
         temp_path = os.path.join(tmp_dir, ps.filename)
         script_content = ps.solution
@@ -143,9 +158,14 @@ class TritonBench:
     
     def write_perf_file(self, input_folder_path, results_path, tmp_dir):
         """
-        input_folder_path: the folder path where codes that pass call and exe tests are stored
-        results_path: the folder where perf results (json files) are stored
-        tmp_dir: the folder used to store scripts, which are concatenated with codes used to test performance
+        Preparation step for latency measurement.
+        This method collects generated kernels that passed both call and execution tests, 
+        appends performance testing code, and stores the resulting scripts in tmp_dir.
+
+        Args:
+            input_folder_path: directory where codes that pass call and exe tests are stored
+            results_path: directory where perf results (json files) are stored
+            tmp_dir: Temporary directory for storing performance test scripts. This folder needs to be empty before use.
         """
         
         os.makedirs(tmp_dir, exist_ok=True)
@@ -207,51 +227,6 @@ class TritonBench:
                 
                 with open(os.path.join(tmp_dir, perf_file_name), "w") as f:
                     f.write(golden_metrics)
-                
-    def _run_perf_script(self, args):
-        timeout_sec = 600  # 10 mins
-        progress_lock = Lock()
-        progress = Value('i', 0)
-
-        gpu_id, script, total_scripts, log_dir = args
-
-        script_name = os.path.basename(script)
-        log_file = os.path.join(log_dir, f"{script_name}.log")
-        err_file = os.path.join(log_dir, f"{script_name}.err")
-
-        cmd = f"HIP_VISIBLE_DEVICES={gpu_id} python {script}"
-        # print(f"Running: {cmd}")
-
-        with open(log_file, "w") as log, open(err_file, "w") as err:
-            process = subprocess.Popen(cmd, shell=True, stdout=log, stderr=err)
-        
-        try:
-            process.wait(timeout=timeout_sec)
-        except subprocess.TimeoutExpired:
-            os.killpg(os.getpgid(process.pid), signal.SIGTERM)  # kill the process group
-            err.write(f"\n⏱️ Script timed out after {timeout_sec} seconds\n")
-
-        with progress_lock:
-            progress.value += 1
-            tqdm.write(f"✅ finished {progress.value}/{total_scripts}: {script_name}")
-    
-   
-
-    def run_perf_scripts_multithread(self, gpu_count, script_dir = "./tmp", log_dir = "./logs"):
-        os.makedirs(log_dir, exist_ok=True)
-
-        scripts = sorted([f for f in os.listdir(script_dir) if f.endswith(".py")])
-        scripts = [os.path.join(script_dir, script) for script in scripts]
-        total_scripts = len(scripts)  
-        
-        with Pool(processes=gpu_count) as pool, tqdm(total=total_scripts, desc="Process", ncols=80) as pbar:
-            args_list = [(i % gpu_count, scripts[i], total_scripts, log_dir) for i in range(total_scripts)]
-
-            for _ in pool.imap(self._run_perf_script, args_list):
-                pbar.update(1)
-
-            pool.close()
-            pool.join()
     
     def run_perf_scripts(self, script_dir = "./tmp", log_dir = "./logs", gpu_id=0):
         """
@@ -265,14 +240,6 @@ class TritonBench:
         timeout_sec = 600  # 10 mins
         with tqdm(total=total_scripts) as pbar:
             for idx, script in enumerate(scripts):
-                # script_name = os.path.basename(script)
-                # log_file = os.path.join(log_dir, f"{script_name}.log")
-                # err_file = os.path.join(log_dir, f"{script_name}.err")
-
-                # cmd = f"HIP_VISIBLE_DEVICES={gpu_id} python {script}"
-                # print(f"Running: {cmd}")
-
-                # with open(log_file, "w") as log, open(err_file, "w") as err:
                 env = os.environ.copy()
                 env["HIP_VISIBLE_DEVICES"] = str(gpu_id)
                 try:
@@ -312,18 +279,18 @@ class TritonBench:
         
         # TODO: there is problem with efficiency calculation
         efficiency = max(round(max(get_gbs(data_gen)) * 100 / 2039, 4), round(max(get_tflops(data_gen)) * 100 / 312, 4))
-        # efficiency1 = max(round(max(get_gbs(data_ref)) * 100 / 2039, 4), round(max(get_tflops(data_ref)) * 100 / 312, 4))
-        # # if efficiency >= 100 or spdup >= 10:
-        # #     assert False, f"{path_gen.split('/')[-1]} test failed!"
-        # if efficiency1 > efficiency:
-        #     print(f"金标好啊好11111: {efficiency} < {efficiency1}")
-        # else:
-        #     print(f"生成棒棒棒！！！: {efficiency} > {efficiency1}")
+        
         return spdup, efficiency, round(sum(ms_gen)/len(ms_gen), 4)
     
     def test_opt_correctness(self, code, filename, tmp_dir, save_scripts=True, exe_dir="pass_exe"):
         """
-        Runs a given Python script on a specified GPU.
+        Runs the given Python script on the specified GPU to verify both the executability and correctness of the generated kernel.
+        Args:
+            code: generated code
+            filename: filename of the kernel, e.g `cosine_compute.py`
+            tmp_dir: folder path to store the script.
+            save_script: whether write the correct script in exe_dir. If you want to calculate latency, this need to be set to True
+            exe_dir: folder path to store script for correct kernel
         """
         os.makedirs(exe_dir, exist_ok=True)
         call_status, exec_status, call_stdout, call_stderr, exe_stdout, exe_stderr = code_call_exec_success_allclose(code=code, fname=filename, temp_root=tmp_dir, py_folder=self.py_folder)

@@ -21,7 +21,8 @@ def main():
                           golden_metrics=args.golden_metrics,
                           perf_ref_folder=args.perf_ref_folder,
                           perf_G_path=args.perf_G_path,
-                          result_path=result_path)
+                          result_path=result_path,
+                          target_kernels=args.target_kernels)
 
     # setup agent
     agent = Reflexion_Oneshot(model=model, dataset=dataset, corpus_path=args.corpus_path)
