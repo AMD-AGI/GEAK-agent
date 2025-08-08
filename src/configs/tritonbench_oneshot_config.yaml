@@ -8,9 +8,9 @@ statis_path: "./dataloaders/TB_eval/data/TritonBench_G_comp_alpac_v1_hackathon.j
 py_folder: "./dataloaders/TB_eval/data/TritonBench_G_v1_hackathon"
 instruction_path: "./dataloaders/TB_eval/data/TritonBench_G_comp_alpac_v1_hackathon.json"
 corpus_path: "./dataloaders/TB_eval/data/train_crawl.json"
-golden_metrics: "/group/ossdphi_algo_scratch_03/jianghui/projects/kernel_agent/TB-eval-release/tb_eval/data/TritonBench/performance_metrics/perf_G/golden_metrics"
-perf_ref_folder: null
+golden_metrics: "./dataloaders/TB_eval/data/performance_metrics/golden_metrics_hackathon"
 perf_G_path: "./dataloaders/TB_eval/data/performance_metrics"
+perf_ref_folder: null
 py_interpreter: "python"
 
 # configs for resuming optimization process

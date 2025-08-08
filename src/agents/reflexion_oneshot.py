@@ -124,8 +124,8 @@ class Reflexion_Oneshot(Reflexion):
                 try:
                     _, efficiency, ms = self.dataset.calculate(path_gen, path_ref=None)
 
-                    print(f"{mem.ps.filename}: {ms}")
-                    print(f"{mem.ps.filename}: {efficiency}\n")
+                    print(f"{mem.ps.filename} latency: {ms}")
+                    print(f"{mem.ps.filename} efficiency: {efficiency}\n")
                     
                     
                 except Exception as e:
@@ -155,11 +155,11 @@ class Reflexion_Oneshot(Reflexion):
         if mem.pass_call:
             return
         
-        tab = "\n"
-        fss_text = "".join(f"* {sig}{tab}" for sig in mem.function_signatures)
+        # tab = "\n"
+        # fss_text = "".join(f"* {sig}{tab}" for sig in mem.function_signatures)
         text = prompt_for_generation.prompt.format(
             instruction=mem.ps.instruction,
-            function_signatures=fss_text
+            function_signatures=""
         )
 
         if not mem.ps.solution:

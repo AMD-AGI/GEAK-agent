@@ -43,25 +43,10 @@ class TritonBench:
 
             for line in instructions:
                 instruction = line["instruction"]
-                label = line["output"]
+                # label = line["output"]
+                file = line["file"]
+                label = None
 
-                # get test code
-                g = label.replace("<|im_end|>", "").replace("<|EOT|>", "")
-                tmp = False
-                for item in statis_data:
-                    if g in item["output"]:
-                        file = item["file"]
-                        tmp = item
-                        break
-                if target_kernels is not None:
-                    if file in target_kernels:
-                        print(file)
-                    if file not in target_kernels:
-                        continue
-                if tmp:
-                    statis_data.remove(tmp)
-                elif g[50:220] == 'as tl\n\nif triton.__version__ >= "2.1.0":\n    @triton.jit\n    def _fwd_kernel(\n        Q, K, V, sm_scale, B_Start_Loc, B_Seqlen,  # B_LOC 内部记录每个batch 输入的真实位置， B_SEQ_len 记录':
-                        file = "context_attn_nopad.py"
                 path = os.path.join(self.py_folder, file)
                 assert os.path.exists(path), f"{file} not exist!"
                 test_code = open(path, "r", encoding="utf-8").read().split("#"*146)[-1]
@@ -107,7 +92,7 @@ class TritonBench:
                 output = {
                     "instruction": ps.instruction,
                     "label": ps.label,
-                    "filename": ps.filename,
+                    "file": ps.filename,
                 }
                 if ps.test_code:
                     output["test_code"] = ps.test_code
