@@ -110,7 +110,7 @@ class TritonBench:
         """
         Runs a given Python script on a specified GPU.
         """
-        pass_call, pass_exe, speedup, call_stdout, call_stderr = self.evaluator(code, tmp_dir, exe_dir, filename, atol=1e-3, rtol=1e-3, custom_tests_path=None, gpu_id=gpu_id)
+        pass_call, pass_exe, speedup, call_stdout, call_stderr = self.evaluator(code, tmp_dir, exe_dir, filename, atol=1e-3, rtol=1e-3, custom_tests_path=None)
 
         return pass_call, pass_exe, speedup, call_stdout, call_stderr
     
