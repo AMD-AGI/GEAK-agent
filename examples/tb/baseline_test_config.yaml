@@ -1,0 +1,56 @@
+max_iterations: 1
+checkpoint_interval: 1
+log_level: "INFO"
+
+# LLM configuration
+llm:
+  sampling: 
+    fn: "random"
+  models:
+    - name: "claude-sonnet-4"
+      weight: 1.0
+      api_base: https://llm-api.amd.com/claude3/deployments/claude-sonnet-4
+      api_key: null
+
+  evaluator_models:
+    - name: "claude-sonnet-4"
+      weight: 1.0
+      api_base: https://llm-api.amd.com/claude3/deployments/claude-sonnet-4
+      api_key: null
+
+prompt:
+  template_dir: "./prompts"
+
+# Database configuration
+database:
+  db_path: "./baseline_test_db"
+  population_size: 3
+  archive_size: 3
+  num_islands: 1
+  elite_selection_ratio: 0.3
+  exploitation_ratio: 0.65
+  exploration_ratio: 0.35
+  log_prompts: false
+
+# Evaluator configuration
+evaluator:
+  timeout: 1800  # 30 minutes - TB-eval-OE is slow
+  parallel_evaluations: 1
+  use_llm_feedback: false
+  cascade_evaluation: false
+  eval_dir: /home/sapmajum/geak-openevolve/examples/tb/tb_evals
+  test_suite_path: /home/sapmajum/geak-openevolve/examples/tb/samples/test_suite.py
+  ref_wrapper_path: /home/sapmajum/geak-openevolve/examples/tb/samples/kernel.py
+  wrapper_fn_name: test_add
+  unit_tests_path: /home/sapmajum/geak-openevolve/examples/tb/samples/unit_tests.py
+  n_warmup: 10
+  n_iters: 50
+  atol: 1e-3
+  rtol: 1e-3
+  verbose: false
+  
+# Evolution settings
+diff_based_evolution: true
+allow_full_rewrites: false
+max_code_length: 60000
+

@@ -1,0 +1,56 @@
+max_iterations: 2
+checkpoint_interval: 1
+log_level: "INFO"
+
+# LLM configuration for Triton kernel optimization
+llm:
+  sampling: 
+    fn: "random"
+  models:
+    - name: "claude-sonnet-4"
+      weight: 1.0
+      api_base: <API_URL>
+      api_key: null
+
+  evaluator_models:
+    - name: "claude-sonnet-4"
+      weight: 1.0
+      api_base: <API_URL>
+      api_key: null
+
+prompt:
+  template_dir: "./examples/tb/prompts"
+
+# Database configuration
+database:
+  db_path: "./demo_databases"
+  population_size: 5
+  archive_size: 5
+  num_islands: 2
+  elite_selection_ratio: 0.3
+  exploitation_ratio: 0.65
+  exploration_ratio: 0.35
+  log_prompts: true
+
+# Evaluator configuration for Triton evaluator
+evaluator:
+  timeout: 600  # 10 minutes
+  parallel_evaluations: 2
+  use_llm_feedback: true
+  cascade_evaluation: false  # Disable cascade for ROCm evaluator
+  eval_dir: /home/sapmajum/geak-openevolve/examples/tb/tb_evals
+  test_suite_path: /home/sapmajum/geak-openevolve/examples/tb/samples/test_suite.py
+  ref_wrapper_path: /home/sapmajum/geak-openevolve/examples/tb/samples/kernel.py
+  wrapper_fn_name: test_add
+  unit_tests_path: /home/sapmajum/geak-openevolve/examples/tb/samples/unit_tests.py
+  n_warmup: 10
+  n_iters: 50
+  atol: 1e-3
+  rtol: 1e-3
+  verbose: false
+  
+# Evolution settings
+diff_based_evolution: true
+allow_full_rewrites: false
+max_code_length: 60000
+

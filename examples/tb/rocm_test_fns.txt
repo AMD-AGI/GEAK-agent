@@ -1,0 +1,159 @@
+triton_multreduce_matmul_kernel.py:315:         def test_matmul(M: int, N: int, K: int, use_bias: bool, request) -> None:  
+triton_multreduce_matmul_kernel.py:453:         def test_performance(m_n_k_shape, block_config, use_bias_flag, dtype_str, 
+triton_multreduce_matmul_kernel.py:523:         def test_save_results():  
+triton_multreduce_matmul_kernel.py:539:         def test_save_performance_results():
+
+test_triton_swizzle2d.py:62:            def test_swizzle2d(size_i, size_j, size_g, request, device='cuda'):
+test_triton_swizzle2d.py:138:           def test_performance(size_i_k, size_j_k, size_g_k, output_dtype_str, request, device='cuda'):
+test_triton_swizzle2d.py:189:           def test_save_results():  
+test_triton_swizzle2d.py:206:           def test_save_performance_results():
+
+test_triton_sort.py:106:            def test_sort(N_rows, M_cols, descending, dtype_str, request, device='cuda'):
+test_triton_sort.py:194:            def test_performance(N_tile_rows, M_tile_cols, descending_val, dtype_str, request, device='cuda'):
+test_triton_sort.py:238:            def test_save_results():  
+test_triton_sort.py:254:            def test_save_performance_results():
+
+test_triton_flip.py:99:         def test_flip(N_rows, M_cols, dtype_str, request, device='cuda'):
+test_triton_flip.py:171:            def test_performance(N_const, M_const, dtype_str, num_warps_launch, request, device='cuda'):
+test_triton_flip.py:210:            def test_save_results():  
+test_triton_flip.py:227:            def test_save_performance_results():
+
+test_tma_store_gemm.py:114:         def test_tma_load_store(M, N, K, NUM_CTAS, NUM_WARPS, TRANS_A, TRANS_B, OUTPUT_F16, request):
+test_tma_store_gemm.py:215:         def test_performance(M, N, K, NUM_CTAS_param, NUM_WARPS_param, TRANS_A, TRANS_B, OUTPUT_F16_param, request):
+test_tma_store_gemm.py:269:         def test_save_results():  
+test_tma_store_gemm.py:286:         def test_save_performance_results():
+
+test_reverse_range.py:59:           def test_reverse_range(request, device='cuda'):
+test_reverse_range.py:125:          def test_performance(dtype_str, num_warps_launch, request, device='cuda'):
+test_reverse_range.py:165:          def test_save_results():  
+test_reverse_range.py:182:          def test_save_performance_results():
+
+test_random_int.py:183:         def test_randint(size, seed, dtype, const_seed, request, device='cuda'):
+test_random_int.py:281:         def test_performance(size_val, seed_val, output_dtype_str, const_seed_bool, request, device='cuda'):
+test_random_int.py:318:         def test_save_results():  
+test_random_int.py:337:         def test_save_performance_results():
+
+test_randn.py:179:          def test_rand(size, seed, dtype, const_seed,  request, device='cuda'):
+test_randn.py:262:          def test_performance(size_val, seed_val, offset_tl_dtype_str, const_seed_bool, request, device='cuda'):
+test_randn.py:300:          def test_save_results():  
+test_randn.py:318:          def test_save_performance_results():
+
+test_matmul_MXFP.py:233:            def test_pipeline_matmul(scale, request, device='cuda'):
+test_matmul_MXFP.py:413:            def test_performance(test_cfg_dict, request):
+test_matmul_MXFP.py:515:            def test_save_results():  
+test_matmul_MXFP.py:532:            def test_save_performance_results():
+
+test_load_reduce.py:86:         def test_load_reduce(BLOCK_M, BLOCK_N, dtype_str, request):
+test_load_reduce.py:171:            def test_performance(block_m_const, block_n_const, dtype_str, request): # Added num_warps_launch if parametrized
+test_load_reduce.py:214:            def test_save_results():  
+test_load_reduce.py:230:            def test_save_performance_results():
+
+test_kernel_sub.py:106:         def test_compile_kernel_sub_in_subproc(fresh_triton_cache, request) -> None: # Test name updated for clarity
+test_kernel_sub.py:184:         def test_performance(N_val, dtype_str, num_warps_launch, request):
+test_kernel_sub.py:223:         def test_save_results():  
+test_kernel_sub.py:239:         def test_save_performance_results():
+
+test_kernel_dot.py:102:         def test_compile_kernel_dot_in_forked_subproc(fresh_triton_cache, request) -> None: # Test name updated for clarity
+test_kernel_dot.py:180:         def test_performance(dtype_str, num_warps_launch, request):
+test_kernel_dot.py:216:         def test_save_results():  
+test_kernel_dot.py:232:         def test_save_performance_results():
+
+test_iv_dependent_matmul.py:120:            def test_iv_dependent_matmul(type, request, device='cuda'):
+test_iv_dependent_matmul.py:235:            def test_performance(m_n_k_shape, block_config, kernel_type_str, input_dtype_str, 
+test_iv_dependent_matmul.py:294:            def test_save_results():  
+test_iv_dependent_matmul.py:310:            def test_save_performance_results():
+
+test_gemm_no_scf.py:145:            def test_gemm_no_scf(M, N, K, NUM_CTAS, NUM_WARPS, TRANS_A, TRANS_B, OUTPUT_TYPE, USE_TMA_EPILOGUE, request):
+test_gemm_no_scf.py:264:            def test_performance(M, N, K, NUM_CTAS, NUM_WARPS, TRANS_A, TRANS_B, OUTPUT_TYPE, USE_TMA_EPILOGUE, request):
+test_gemm_no_scf.py:318:            def test_save_results():  
+test_gemm_no_scf.py:335:            def test_save_performance_results():
+
+test_gemm_fusion.py:103:            def test_gemm_fusion(request):
+test_gemm_fusion.py:230:            def test_performance(test_params_dict, dtype_str, request):
+test_gemm_fusion.py:278:            def test_save_results():  
+test_gemm_fusion.py:295:            def test_save_performance_results():
+
+test_flashattention_fwd.py:231:         def test_op(Z, H, N_CTX, D_HEAD, request, dtype=torch.float16):
+test_flashattention_fwd.py:297:         def test_performance(Z, H, N_CTX, D_HEAD, dtype_str, request): 
+test_flashattention_fwd.py:342:         def test_save_results():  
+test_flashattention_fwd.py:358:         def test_save_performance_results():
+
+test_chained_matmul.py:95:          def test_chained_matmul(request, device='cuda'):
+test_chained_matmul.py:260:         def test_performance(test_params_dict, dtype_str, request):
+test_chained_matmul.py:309:         def test_save_results():  
+test_chained_matmul.py:325:         def test_save_performance_results():
+
+test_chained_dot_fp8.py:183:            def test_chained_dot(M, N, D, dtype, msize,request):
+test_chained_dot_fp8.py:279:            def test_performance(test_config, request):
+test_chained_dot_fp8.py:356:            def test_save_results():  
+test_chained_dot_fp8.py:373:            def test_save_performance_results():
+
+test_cast_matmul.py:114:            def test_cast_matmul(M, K, N, w_dtype, x_dtype, out_dtype, request):
+test_cast_matmul.py:249:            def test_performance(M, K, N, a_dtype_str, b_dtype_str, c_dtype_str, dot_acc_tl_dtype_str, request):
+test_cast_matmul.py:304:            def test_save_results():  
+test_cast_matmul.py:321:            def test_save_performance_results():
+
+test_block_pointer_matmul.py:84:            def test_block_ptr_matmul_no_scf(shape, num_warps, request, device='cuda'):
+test_block_pointer_matmul.py:187:           def test_performance(shape, num_warps_arg, dtype_str, request, device='cuda'): # Renamed
+test_block_pointer_matmul.py:226:           def test_save_results():  
+test_block_pointer_matmul.py:242:           def test_save_performance_results():
+
+test_block_copy.py:92:          def test_block_copy(dtypes_str, n, padding_option, request, device='cuda'):
+test_block_copy.py:175:         def test_performance(dtypes_str_tuple, n, padding_option, request, device='cuda'): # Renamed
+test_block_copy.py:239:         def test_save_results():  
+test_block_copy.py:255:         def test_save_performance_results():
+
+test_batched_vecmat.py:92:          def test_vecmat(request, device='cuda'):  
+test_batched_vecmat.py:162:         def test_vecmat(request, device='cuda'):
+test_batched_vecmat.py:295:         def test_performance(M, N, K, block_m, block_n, block_k, dtype_str, request):
+test_batched_vecmat.py:336:         def test_save_results():  
+test_batched_vecmat.py:352:         def test_save_performance_results():
+
+test_add_kernel.py:116:         def test_add(SIZE, BLOCK_SIZE, dtype_str, request):
+test_add_kernel.py:149:         def test_performance(SIZE, BLOCK_SIZE_ARG, dtype_str, request): # Function accepts BLOCK_SIZE_ARG
+test_add_kernel.py:188:         def test_save_results():  
+test_add_kernel.py:205:         def test_save_performance_results():
+
+softmax.py:269:         def test_softmax(M, N, request):
+softmax.py:341:         def test_performance(M, N, dtype_str, request): # Renamed from test_softmax
+softmax.py:453:         def test_save_results():  
+softmax.py:469:         def test_save_performance_results():
+
+rmsnorm_fwd.py:358:         def test_rmsnorm(M, N, ZERO_CENTERED_GAMMA, in_dtype_str, out_dtype_str, request):
+rmsnorm_fwd.py:444:         def test_performance(M, N, ZERO_CENTERED_GAMMA, in_dtype_str, out_dtype_str, request):
+rmsnorm_fwd.py:503:         def test_save_results():  
+rmsnorm_fwd.py:519:         def test_save_performance_results():
+
+rmsnorm_bwd.py:539:         def test_rmsnorm(M, N, ZERO_CENTERED_GAMMA, in_dtype_str, out_dtype_str, request):
+rmsnorm_bwd.py:685:         def test_performance(M, N, ZERO_CENTERED_GAMMA, dtype_str, request):
+rmsnorm_bwd.py:744:         def test_save_results():  
+rmsnorm_bwd.py:761:         def test_save_performance_results():
+
+naive_softmax.py:214:           def test_softmax(M, N, request):
+naive_softmax.py:286:           def test_performance(M, N, dtype_str, request): # Renamed from test_softmax
+naive_softmax.py:398:           def test_save_results():  
+naive_softmax.py:414:           def test_save_performance_results():
+
+multreduce_matmul_dot_kernel.py:327:            def test_matmul(M: int, N: int, K: int, use_bias: bool,request) -> None:  
+multreduce_matmul_dot_kernel.py:394:            def test_performance(M: int, N: int, K: int, use_bias: bool, dtype_str: str, request) -> None:
+multreduce_matmul_dot_kernel.py:424:            def test_save_results():  
+multreduce_matmul_dot_kernel.py:440:            def test_save_performance_results():
+
+moe_gemm.py:645:            def test_correctness(M: int, N: int, K: int, top_k: int, E: int, routed_weight: bool, request, dtype=torch.float16):  
+moe_gemm.py:689:            def test_correctness_fp8(M: int, N: int, K: int, top_k: int, E: int, routed_weight: bool, use_fp8_w8a8, fp8_type, request, dtype=torch.float16): 
+moe_gemm.py:736:            def test_correctness_int8_w8a16(M: int, N: int, K: int, top_k: int, E: int, routed_weight: bool, use_int8_w8a16, request,  
+moe_gemm.py:780:            def test_correctness_int8_w8a8(M: int, N: int, K: int, top_k: int, E: int, routed_weight: bool, use_int8_w8a8, request,  
+moe_gemm.py:885:            def test_performance(M_orig, N, K, top_k, E, routed_weight, dtype_str, request):
+moe_gemm.py:927:            def test_save_results():  
+moe_gemm.py:943:            def test_save_performance_results():
+
+layernorm.py:320:           def test_layernorm(M, N, request, eps=1e-5):  
+layernorm.py:413:           def test_performance(M, N, dtype_str, request):
+layernorm.py:449:           def test_save_results():  
+layernorm.py:465:           def test_save_performance_results():
+
+gemm.py:563:            def test_correctness(M, N, K, col_a, col_b, in_dtype_a, in_dtype_b, out_dtype, request):  
+gemm.py:616:            def test_performance(M, N, K, col_a, col_b, in_dtype_a_str, in_dtype_b_str, out_dtype_str, request):
+gemm.py:723:            def test_save_results():  
+gemm.py:739:            def test_save_performance_results():
+

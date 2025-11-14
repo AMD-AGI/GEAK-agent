@@ -1,0 +1,8 @@
+runs/
+scratch/
+old/
+oe_softmax_triton1*/
+databases/
+tb_evals/
+rocm_evals/
+tmp/
