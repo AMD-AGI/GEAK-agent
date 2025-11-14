@@ -264,8 +264,8 @@ class GaAgent(Reflexion_Oneshot):
                             raw_code.strategy = None
                             self.update_perf_candidates(mem=mem, raw_code=raw_code, ancestor_num=ancestor_num)
                 if len(mem.perf_candidates) > 0:
-                    mem.ps.solution = mem.perf_candidates[-1][0]
-                    mem.ps.speedup = mem.perf_candidates[-1][1]
+                    mem.ps.solution = mem.perf_candidates[0][0]
+                    mem.ps.speedup = mem.perf_candidates[0][1]
                 elif mem.exe_candidate:
                     mem.ps.solution = mem.exe_candidate
                 elif mem.call_candidate:
@@ -323,13 +323,14 @@ class GaAgent(Reflexion_Oneshot):
             for i in range(len(mem.raw_codes)):
                 raw_code = mem.raw_codes[i]
                 if not raw_code.pass_perf:
+                    text_temp = text
                     history_text = self._build_history_prompt(mem.history[i])
-                    text += f"\nPrevious attempt implementations:{history_text}"
-                    text += prompt_for_generation.system_prompt
+                    text_temp += f"\nPrevious attempt implementations:{history_text}"
+                    text_temp += prompt_for_generation.system_prompt
                     if raw_code.reflections:
                         raw_code.reflections = None
                     try:
-                        raw_code.code, raw_code.strategy = self.call_llm_code(prompt=text, temperature=temperature)
+                        raw_code.code, raw_code.strategy = self.call_llm_code(prompt=text_temp, temperature=temperature)
                     except:
                         logger.info(f"failed to call LLM for {mem.ps.filename}")
             mem.perf_debug_num +=1
@@ -339,8 +340,9 @@ class GaAgent(Reflexion_Oneshot):
         for i in range(descendant_num):
             gen_code = tempCode()
             try:
-                text += prompt_for_generation.system_prompt
-                gen_code.code, gen_code.strategy = self.call_llm_code(prompt=text, temperature=temperature)
+                text_temp = text
+                text_temp += prompt_for_generation.system_prompt
+                gen_code.code, gen_code.strategy = self.call_llm_code(prompt=text_temp, temperature=temperature)
             except:
                 logger.info(f"failed to call LLM for {mem.ps.filename}")
             gens_codes.append(gen_code)
@@ -447,13 +449,13 @@ Error Message: {raw_code.test_stderr}
         if len(mem.perf_candidates) < ancestor_num:
             candidate = [raw_code.code, raw_code.latency, raw_code.eff, raw_code.reflections, raw_code.profilig]
             mem.perf_candidates.append(tuple(candidate))
-            mem.perf_candidates = sorted(mem.perf_candidates, key=lambda x: x[1], reverse=False)
+            mem.perf_candidates = sorted(mem.perf_candidates, key=lambda x: x[1], reverse=True)
 
         elif mem.perf_candidates[0][1] <= raw_code.latency:
             candidate = [raw_code.code, raw_code.latency, raw_code.eff, raw_code.reflections, raw_code.profilig]
             mem.perf_candidates[0] = tuple(candidate)
             # order the candidates in ascending order with regard to speedups
-            mem.perf_candidates = sorted(mem.perf_candidates, key=lambda x: x[1], reverse=False)
+            mem.perf_candidates = sorted(mem.perf_candidates, key=lambda x: x[1], reverse=True)
             
     def _build_history_prompt(self, history):
         text = ""

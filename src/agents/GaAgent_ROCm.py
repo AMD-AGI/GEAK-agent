@@ -376,13 +376,14 @@ class GaAgent(Reflexion_Oneshot):
             for i in range(len(mem.raw_codes)):
                 raw_code = mem.raw_codes[i]
                 if not raw_code.pass_perf:
+                    text_temp = text
                     history_text = self._build_history_prompt(mem.history[i])
-                    text += f"\nPrevious attempt implementations:{history_text}"
-                    text += prompt_for_generation.system_prompt
+                    text_temp += f"\nPrevious attempt implementations:{history_text}"
+                    text_temp += prompt_for_generation.system_prompt
                     if raw_code.reflections:
                         raw_code.reflections = None
                     try:
-                        raw_code.code, raw_code.strategy = self.call_llm_code(prompt=text, temperature=temperature)
+                        raw_code.code, raw_code.strategy = self.call_llm_code(prompt=text_temp, temperature=temperature)
                     except:
                         logger.info(f"failed to call LLM for {mem.ps.filename}")
             mem.perf_debug_num +=1
@@ -392,8 +393,9 @@ class GaAgent(Reflexion_Oneshot):
         for i in range(descendant_num):
             gen_code = tempCode()
             try:
-                text += prompt_for_generation.system_prompt
-                gen_code.code, gen_code.strategy = self.call_llm_code(prompt=text, temperature=temperature)
+                text_temp = text
+                text_temp += prompt_for_generation.system_prompt
+                gen_code.code, gen_code.strategy = self.call_llm_code(prompt=text_temp, temperature=temperature)
             except:
                 logger.info(f"failed to call LLM for {mem.ps.filename}")
             gens_codes.append(gen_code)
