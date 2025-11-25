@@ -40,7 +40,7 @@ class OpenAILLM(LLMInterface):
         }
         # Set up API client
         self.client = openai.OpenAI(
-            api_key='dummy',
+            api_key=os.environ.get('OPENAI_API_KEY', 'dummy'),
             base_url=self.api_base,
             default_headers=self.headers
         )
