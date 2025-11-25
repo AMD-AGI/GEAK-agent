@@ -1,12 +1,12 @@
-HIP_PATH ?= /opt/rocm
-HIPCC = $(HIP_PATH)/bin/hipcc
-CXXFLAGS = -O2 -std=c++17
-
-TARGET = transpose_naive
+HIPCC = hipcc
+TARGET = test_transpose
 SRC = transpose_naive.hip
+CFLAGS = -O3 -std=c++17
+
+all: $(TARGET)
 
 $(TARGET): $(SRC)
-	$(HIPCC) $(CXXFLAGS) $< -o $@
+	$(HIPCC) $(CFLAGS) -o $@ $<
 
 clean:
 	rm -f $(TARGET)

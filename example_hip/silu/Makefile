@@ -1,23 +1,14 @@
-# Makefile
+HIP_PATH ?= /opt/rocm
+HIPCC = $(HIP_PATH)/bin/hipcc
+CXXFLAGS = -O3 -std=c++17 -ffast-math
 
-# Compiler
-HIPCC = hipcc
-
-# Source and target
+TARGET = test_silu
 SRC = silu.hip
-TARGET = applications_silu
-
-# Compiler flags
-CFLAGS = -O3 -ffast-math
-
-# Default target
-all: $(TARGET)
 
 $(TARGET): $(SRC)
-	$(HIPCC) $(CFLAGS) -o $@ $<
+	$(HIPCC) $(CXXFLAGS) $< -o $@
 
-# Clean rule
 clean:
 	rm -f $(TARGET)
 
-
+.PHONY: clean

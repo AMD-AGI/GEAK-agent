@@ -1,9 +1,50 @@
 [
   {
     "task": "silu",
-    "instruction": "Please optimize the a HIP code implementation (aimed for ROCM platform, MI308 GPU) for better performance. MI308 specs: 64KB LDS per Compute Unit (CU), 80 CUs total. Follows are some guidelines for optimization: 1. Chunked processing: Divide large data into fixed-size chunks (e.g., threads x items/elements) to fit in registers/shared memory, enable streaming computation, and minimize global memory accesses. Process each chunk independently while carrying over state. \n2. Shared memory for state propagation: Use shared memory as a buffer to handle inter-chunk dependencies, avoiding redundant global memory reads. Store and shift data for efficient access by threads. \n3. Delayed operations: Postpone writes to shared memory until after dependent reads to prevent data races and overwrites, ensuring correct sequential dependencies. \n4. Vectorized I/O: Perform loads/stores in vector types (e.g., 4 or 8 elements for float/half) for coalesced memory access. Use direct mode for aligned data or warp-transpose for flexibility, reducing instruction count and boosting bandwidth. \n5. CUB primitives: Employ CUB library for parallel operations: BlockLoad/BlockStore for efficient, coalesced input/output with temporary shared memory; BlockScan for prefix computations where needed. \n6. Loop unrolling: Apply #pragma unroll to inner loops (e.g., over dimensions or elements) to reduce branching overhead and enable compiler optimizations like instruction scheduling. \n7. Bounded accesses: Implement conditional checks in loads/stores (e.g., if index < length) to safely handle variable data sizes and prevent out-of-bounds errors. \n8. Type and feature handling: Use templates for data types (e.g., float/half/bf16, optional complex); boolean switches for optional features like activations. \n9. Resource limiting for occupancy: Reduce shared memory (LDS) and register usage per workgroup to boost occupancy, allowing more concurrent workgroups per CU/SM for improved parallelism and latency hiding. \n10. Branch divergence minimization: Structure code to minimize divergent branches within warps, ensuring threads execute the same path where possible. \n11. Instruction-level parallelism: Maximize ILP by interleaving independent instructions to hide latencies. \n12. Performance-enhancing techniques specific to AMD GPUs: Apply AMD-specific optimizations like wavefront management or ROCm-tuned configurations. \n13. Kernel fusion or splitting opportunities: Fuse multiple kernels to reduce launches and global memory traffic, or split for better resource utilization. \n 14. Stream and asynchronous execution: Use ROCm streams for overlapping computation and data transfer asynchronously. \nYou can apply other aspects of optimization that fit the kernel. \nImportant requirements:\n1. MUST keep the exact same kernel function name \n2. MUST maintain the same kernel function signature and parameter types\n3. MUST keep the same kernel launch configuration structure\n4. MUST ensure the code is directly compilable and runnable\n5. MUST preserve the same algorithm logic and correctness\n6. MUST maintain the same comments and code formatting style\n7. If the parameter of the kernel is not used, you should remove it and not return it in the code\n8. MUST define shared_memory_size before kernel launch if using shared memory\n\nReturn the optimized implementation including:\n1. The optimized kernel function with the exact same name and signature\n2. Any modified kernel launch parameters (if needed)\n3. Any additional helper functions or kernels (if needed)\n4. Any changes to the launch configuration (if needed)\n\nThe code must be directly compilable and runnable with the same interface as the original implementation. Do not modify the input types and values used when calling the kernel in the main function.",
-    "output": "",
+    "instruction": "Optimize SiLU activation kernel. Current version uses only 32 threads per block which is very inefficient. Key optimizations: increase block size to 256-1024 threads, use vectorized bf16 loads (bf16x2 or bf16x4), use __expf for faster exp, use __forceinline__. MUST keep kernel name: silu_mul_kernel and signature: (bf16* out, const bf16* in, int64_t B, int64_t H).",
     "file_path": "silu",
     "file_name": "silu.hip"
+  },
+  {
+    "task": "gemm_naive",
+    "instruction": "Optimize the naive GEMM kernel. Current version uses small 8x8 thread blocks, no shared memory, no tiling. Key optimizations: use shared memory for A and B tiles, increase block size, use thread-level tiling (each thread computes multiple elements), loop unrolling. MUST keep kernel name: gemm_naive_kernel and signature: (float* C, const float* A, const float* B, int M, int N, int K).",
+    "file_path": "gemm_naive",
+    "file_name": "gemm_naive.hip"
+  },
+  {
+    "task": "reduction_naive",
+    "instruction": "Optimize the naive reduction kernel. Current version uses only 32 threads per block and sequential reduction in thread 0 with atomicAdd. Key optimizations: increase block size to 256-1024, use parallel tree reduction in shared memory, use warp shuffle primitives, process multiple elements per thread. MUST keep kernel name: reduction_naive_kernel and signature: (float* output, const float* input, int size).",
+    "file_path": "reduction_naive",
+    "file_name": "reduction_naive.hip"
+  },
+  {
+    "task": "softmax_naive",
+    "instruction": "Optimize the naive softmax kernel. Current version uses only 32 threads per block with sequential reduction in thread 0. Key optimizations: increase block size to 256, use warp shuffle for parallel reduction, use vectorized loads. MUST keep kernel name: softmax_naive_kernel and signature: (float* output, const float* input, int batch_size, int feature_dim).",
+    "file_path": "softmax_naive",
+    "file_name": "softmax_naive.hip"
+  },
+  {
+    "task": "conv_naive",
+    "instruction": "Optimize the naive 2D convolution kernel. Current version has no shared memory, reads kernel weights from global memory repeatedly. Key optimizations: use shared memory for input tiles and kernel weights, use register blocking. MUST keep kernel name: conv2d_naive_kernel.",
+    "file_path": "conv_naive",
+    "file_name": "conv_naive.hip"
+  },
+  {
+    "task": "attention_naive",
+    "instruction": "Optimize the naive attention kernel. Current version uses flat indexing with small block size, no shared memory. Key optimizations: use 2D thread blocks, shared memory tiling for Q/K/V, fused softmax computation. MUST keep kernel names: attention_naive_kernel and attention_softmax_kernel.",
+    "file_path": "attention_naive",
+    "file_name": "attention_naive.hip"
+  },
+  {
+    "task": "layernorm_naive",
+    "instruction": "Optimize the naive LayerNorm kernel. Apply fused mean/variance computation, warp shuffle for reductions. MUST keep kernel name: layernorm_naive_kernel and signature: (float* output, const float* input, const float* gamma, const float* beta, int batch_size, int feature_dim, float epsilon).",
+    "file_path": "layernorm_naive",
+    "file_name": "layernorm_naive.hip"
+  },
+  {
+    "task": "transpose_naive",
+    "instruction": "Optimize the naive transpose kernel. Current version uses flat 1D indexing with small block size, causing non-coalesced memory writes. Key optimizations: use 2D thread blocks (e.g., 32x32), use shared memory tile to enable coalesced reads and writes, handle bank conflicts. MUST keep kernel name: transpose_naive_kernel and signature: (float* output, const float* input, int rows, int cols).",
+    "file_path": "transpose_naive",
+    "file_name": "transpose_naive.hip"
   }
 ]
