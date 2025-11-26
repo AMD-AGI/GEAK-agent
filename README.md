@@ -16,6 +16,7 @@ GEAK-OpenEvolve is an evolutionary coding agent(inspired by [OpenEvolve](https:/
 - **Flexible Configuration**: YAML-based configuration for easy customization
 
 ---
+NOTE: Check tutorial notebooks in `tutorial/`
 
 ## 📋 Table of Contents
 
@@ -31,6 +32,7 @@ GEAK-OpenEvolve is an evolutionary coding agent(inspired by [OpenEvolve](https:/
 - [References](#references)
 
 ---
+
 
 ## 🏗️ Architecture
 
