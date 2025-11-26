@@ -56,3 +56,11 @@ problems
 
 rocm_evals/
 
+
+# Tutorial-related ignores
+tutorial/evals/
+tutorial/.ipynb_checkpoints/
+tutorial/runs/
+
+# GEAK-eval clone (used by tutorial)
+GEAK-eval-OE/

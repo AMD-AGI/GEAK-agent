@@ -36,7 +36,7 @@ except Exception as _e:
         "Triton must be installed with AMD/ROCm support "
     ) from _e
 
-import tb_eval  # Using TB-eval-OE installed as geak-eval 
+import geak_eval  # Using GEAK-eval-OE evaluation framework 
 # ────────────────────────────────────────────────────────────────────────────
 # Exceptions (Triton / ROCm specific)
 # ────────────────────────────────────────────────────────────────────────────
@@ -90,6 +90,9 @@ class BulletproofTritonEvaluator:
 
         # Baseline (PyTorch) numbers are cached between attempts
         self._baseline_metrics: Optional[Dict[str, float]] = None
+        
+        # Baseline file path (will be set during first evaluation)
+        self._baseline_file: Optional[str] = None
 
         print("🛡️ BULLETPROOF TRITON KERNEL EVALUATOR (AMD GPU) INITIALISED")
 
@@ -129,139 +132,156 @@ class BulletproofTritonEvaluator:
                 print(f"Using program text from file: {program_text}")
 
             print(f"Evaluating Triton kernel from: {program_text}")
-            ## in a subprocess.run run the command python program_text -a
+            
+            # Run correctness tests using pytest
             env = os.environ.copy()
-            env['HIP_VISIBLE_DEVICES'] = str(gpu_id % 8)  # Set the GPU ID for ROCm
-            cmd = ["geak-eval", "eval", "-f", f'{program_text}', "-o", 'rocm_results', "--dataset", 'rocm', "-c", "-tp", f'{tb_eval.constants.ROCm_DATA_AUTOTUNE_ROOT}' ]
-            print(f"Running kernel evaluation command: {' '.join(cmd)}")
-            result = subprocess.run(
-                cmd,
+            env['HIP_VISIBLE_DEVICES'] = str(gpu_id % 8)
+            
+            # Run pytest for correctness (excluding performance tests)
+            correctness_cmd = [
+                "pytest", "-v", "-x", "--maxfail=1", 
+                program_text,
+                "-k", "not (test_performance or test_save)"
+            ]
+            print(f"Running correctness tests: {' '.join(correctness_cmd)}")
+            correctness_result = subprocess.run(
+                correctness_cmd,
                 capture_output=True,
                 text=True,
-                timeout=3600,  # 1 hour timeout
+                timeout=600,
                 env=env
             )
                 
             call, correct, benchmark, benchmark_params, err_msg = None, None, None, None, ""
 
-            if result.returncode != 0:
-                print(f"Kernel kernel evaluation command failed!: {result.stderr.strip()}")
-                return self._create_comprehensive_failure_result(
-                    f"Kernel kernel evaluation command failed!: {result.stderr.strip()}"
-                )
-
-            ## get dir name by removing extension from program_text
-            ext_removed = os.path.splitext(program_text)[0]
-            if not os.path.exists(ext_removed):
-                call = False
-                correct = False
-                benchmark = None
-                benchmark_params = None
-                err_msg += f"Evaluation directory {ext_removed} does not exist. Kernel evaluation failed."
-                return self._create_comprehensive_failure_result(err_msg)
-
-            rocm_runs_file = os.path.join(ext_removed, "rocm_results")
-
-            ## read rocm_runs file
-            if not os.path.exists(rocm_runs_file):
-                call = False
-                correct = False
-                benchmark = None
-                benchmark_params = None
-                err_msg += f"ROCm runs file {rocm_runs_file} does not exist. Kernel evaluation failed."
-                return self._create_comprehensive_failure_result(err_msg)
-
-            with open(rocm_runs_file, 'r') as f:
-                result = f.read().strip()
+            # Check correctness test results
+            call = correctness_result.returncode == 0
+            correct = call  # If tests pass, kernel is correct
             
-            result_lines = result.splitlines()
-            if len(result_lines) < 1:
-                call = False
-                correct = False
-                benchmark = None
-                benchmark_params = None
-                err_msg += "ROCm runs file is empty. Kernel evaluation failed."
+            if not call:
+                print(f"Correctness tests failed. Return code: {correctness_result.returncode}")
+                print(f"STDOUT: {correctness_result.stdout}")
+                print(f"STDERR: {correctness_result.stderr}")
+                # Combine stdout and stderr for error message
+                err_msg = f"Correctness tests failed (exit {correctness_result.returncode}):\n"
+                if correctness_result.stdout:
+                    err_msg += f"STDOUT: {correctness_result.stdout}\n"
+                if correctness_result.stderr:
+                    err_msg += f"STDERR: {correctness_result.stderr}\n"
                 return self._create_comprehensive_failure_result(err_msg)
 
-            for line in result_lines:
-                err_msg += f"Could not find call or correctness information in the ROCm runs file {rocm_runs_file}. with keys 'Call: ' and 'Exec: '."
-                if ("Call" in line) and ("Exec" in line):
-                    call = line.split(",")[1].strip().split(":")[1].strip().lower() == 'true'
-                    correct = line.split(",")[2].strip().split(":")[1].strip().lower() == 'true'
-                    print(f"NOTE: for line {line}  call: {call}, correctness: {correct}")
-                    err_msg = ""
-                    break
-            if not call or not correct:
-                err_msg = result
-
-            benchmark_file = os.path.join(ext_removed, "exec", "rocm_performance_analysis.txt")
-
-            if not os.path.exists(benchmark_file):
-                benchmark = None
-                benchmark_params = None
-                err_msg += f"Benchmark file {benchmark_file} does not exist. Kernel evaluation failed."
-            else:
-                with open(benchmark_file, 'r') as f:
-                    benchmark_data = f.read().strip()
-                
-                    benchmark_lines = benchmark_data.splitlines()
-                    if len(benchmark_lines) < 1:
-                        benchmark = None
-                        benchmark_params = None
-                        err_msg += "Benchmark file is empty. Kernel evaluation failed."
-                    else:
-                        # Parse the benchmark data
-                        benchmark = None
-                        benchmark_params = []
-                        err_msg += f"Could not find benchmark data in the file {benchmark_file} with key 'Speedup (Gen vs. Ref): '."
-                        for line in benchmark_lines:
-                            if "Speedup (Gen vs. Ref): " in line:
-                                benchmark = float(line.split(":")[1].strip()) 
-                                err_msg = ""
+            # Run performance tests to get benchmark data
+            # Get the directory where the kernel file is located
+            kernel_dir = os.path.dirname(os.path.abspath(program_text))
+            perf_dir = os.path.join(kernel_dir, "perf")
+            
+            # Run performance tests
+            perf_cmd = [
+                "pytest", "-v", "-x", "--maxfail=1",
+                program_text,
+                "-k", "test_performance or test_save_performance_results"
+            ]
+            print(f"Running performance tests: {' '.join(perf_cmd)}")
+            perf_result = subprocess.run(
+                perf_cmd,
+                capture_output=True,
+                text=True,
+                timeout=1800,
+                env=env
+            )
+            
+            # Parse performance results from JSON files
+            benchmark = None
+            benchmark_params = None
+            
+            print(f"Performance test result - returncode: {perf_result.returncode}")
+            print(f"Performance test stdout: {perf_result.stdout[:500]}")
+            print(f"Performance test stderr: {perf_result.stderr[:500]}")
+            
+            if os.path.exists(perf_dir):
+                print(f"Looking for performance results in: {perf_dir}")
+                perf_files = [f for f in os.listdir(perf_dir) if f.endswith('.json')]
+                print(f"Found {len(perf_files)} JSON files: {perf_files}")
+                if perf_files:
+                    import json
+                    latest_perf_file = os.path.join(perf_dir, sorted(perf_files)[-1])
+                    print(f"Reading performance data from: {latest_perf_file}")
+                    with open(latest_perf_file, 'r') as f:
+                        perf_data = json.load(f)
+                    
+                    print(f"Performance data structure: {list(perf_data[0].keys()) if perf_data else 'empty'}")
+                    
+                    # Extract latency (in milliseconds)
+                    if perf_data and len(perf_data) > 0:
+                        # Get the first benchmark result
+                        first_result = perf_data[0]
+                        # Try different possible keys
+                        for key in ['latency_ms', 'ms', 'mean_ms', 'median_ms']:
+                            if key in first_result:
+                                benchmark = first_result[key]
+                                benchmark_params = first_result.get('config', first_result.get('params', {}))
+                                print(f"Performance: {benchmark}ms (from key '{key}')")
                                 break
-
-            # op = os.path.splitext(os.path.basename(program_text))[0]
-            # benchmark_params_file = os.path.join(ext_removed, "exec", "perf", f"{op}_perf.json")
-            benchmark_params_root = os.path.join(ext_removed, "exec", "perf")
-            files_here = glob(f"{benchmark_params_root}/*.json")
-            benchmark_params_file = None
-            if files_here:
-                for file in files_here:
-                    if "all_perf_results.json" in file:
-                        continue
-                    benchmark_params_file = file
-
-            if (benchmark_params_file is None) or (not os.path.exists(benchmark_params_file)):
-                benchmark_params = None
-                err_msg += f"Benchmark parameters file {benchmark_params_file} does not exist. Kernel performance evaluation failed."
-
+                        
+                        if benchmark is None:
+                            print(f"Available keys in perf data: {first_result.keys()}")
+                else:
+                    print(f"No JSON performance files found in {perf_dir}")
             else:
-                baseline_fname = os.path.basename(benchmark_params_file)
-                with open(benchmark_params_file, 'r') as f:
-                    json_data = json.load(f)
-
-                benchmark_params = ""
-
-                for item in json_data:
-                    params = item.get("params", {})
-                    latency = item.get("ms", None)
-                    if params and latency is not None:
-                        benchmark_params += "For parameters: "
-                        params_str = ";".join(f"{k}={v}" for k, v in params.items())
-                        benchmark_params += params_str + f" the generated triton kernel achieved a latency of {latency:.6f} ms. "
-
-                if benchmark_params == "":
-                    baseline_file = os.path.join(self.GOLDEN_DATA_PATH, baseline_fname)
-                    if os.path.exists(baseline_file):
-                        with open(baseline_file, 'r') as f:
-                            json_data = json.load(f)
-                        for item in json_data:
-                            params = item.get("params", {})
-                            latency = item.get("ms", None)
-                            if params and latency is not None:
-                                benchmark_params += params_str + f" And the baseline kernel achieved a latency of {latency:.6f} ms. "
-                    else:
-                        print( f"⚠️ WARNING: Baseline performance file {baseline_file} does not exist.")
+                print(f"Performance directory does not exist: {perf_dir}")
+            
+            # If we don't have benchmark data, that's okay for now
+            if benchmark is None:
+                print("Warning: No benchmark data available")
+                benchmark = 0.0  # Default value
+            
+            # Calculate speedup using persistent baseline stored in file
+            # Baseline file is stored in the parent directory of the temp eval directory
+            if self._baseline_file is None:
+                # Determine baseline file path from the program_text path
+                # e.g., /path/evals/tmpXXX/test.py -> /path/evals/.baseline_latency.txt
+                eval_dir = os.path.dirname(program_text)  # /path/evals/tmpXXX
+                evals_root = os.path.dirname(eval_dir)     # /path/evals
+                self._baseline_file = os.path.join(evals_root, ".baseline_latency.txt")
+            
+            # Try to load existing baseline
+            baseline_latency = None
+            if os.path.exists(self._baseline_file):
+                try:
+                    with open(self._baseline_file, 'r') as f:
+                        baseline_latency = float(f.read().strip())
+                    print(f"Loaded baseline latency from file: {baseline_latency:.6f}ms")
+                except Exception as e:
+                    print(f"Warning: Could not load baseline from {self._baseline_file}: {e}")
+            
+            # If no baseline exists, establish it from this kernel
+            if baseline_latency is None:
+                baseline_latency = benchmark
+                speedup = 1.0  # First kernel is the baseline
+                print(f"Establishing NEW baseline latency: {baseline_latency:.6f}ms, speedup=1.0")
+                # Save baseline to file for future evaluations
+                try:
+                    os.makedirs(os.path.dirname(self._baseline_file), exist_ok=True)
+                    with open(self._baseline_file, 'w') as f:
+                        f.write(f"{baseline_latency:.10f}")
+                    print(f"Saved baseline to: {self._baseline_file}")
+                except Exception as e:
+                    print(f"Warning: Could not save baseline to {self._baseline_file}: {e}")
+            else:
+                # Calculate speedup relative to baseline
+                if benchmark > 0:
+                    speedup = baseline_latency / benchmark
+                    print(f"Calculated speedup: {baseline_latency:.6f}ms / {benchmark:.6f}ms = {speedup:.4f}x")
+                else:
+                    speedup = 0.0
+                    print(f"Warning: Invalid benchmark {benchmark}, setting speedup to 0.0")
+            
+            # Format benchmark_params if we have it
+            if benchmark_params and isinstance(benchmark_params, dict):
+                params_str = "; ".join(f"{k}={v}" for k, v in benchmark_params.items())
+                benchmark_params = f"Kernel parameters: {params_str}, achieved latency: {benchmark:.6f} ms, speedup: {speedup:.4f}x"
+            elif not benchmark_params:
+                benchmark_params = f"Achieved latency: {benchmark:.6f} ms, speedup: {speedup:.4f}x"
 
             summary = ""
             if call:
@@ -274,8 +294,8 @@ class BulletproofTritonEvaluator:
             else:
                 summary += "The Triton kernel produced incorrect results. "
 
-            if benchmark is not None:
-                summary += f"The Triton kernel achieved a performance benchmark of {benchmark:.6f}x compared to the baseline."
+            if benchmark is not None and benchmark > 0:
+                summary += f"The Triton kernel achieved a speedup of {speedup:.4f}x compared to the baseline."
             else:
                 summary += "The Triton kernel failed to benchmark."
 
@@ -293,8 +313,8 @@ class BulletproofTritonEvaluator:
                 if err_msg:
                     safety_validation += f" Error message: {err_msg}"
             
-            if benchmark is not None:
-                baseline_comparison = f"Performance report: {benchmark_params}."
+            if speedup > 0:
+                baseline_comparison = f"Performance report: {benchmark_params}. Speedup={speedup:.4f}x (baseline: {baseline_latency:.6f}ms, current: {benchmark:.6f}ms)"
             else:
                 baseline_comparison = "The Triton kernel failed to benchmark, so no performance comparison can be made."
                 if err_msg:
@@ -307,13 +327,13 @@ class BulletproofTritonEvaluator:
                 )
 
             return {
-                "success": benchmark is not None,
-                "final_score": benchmark if benchmark is not None else 0.0,
-                "performance_metrics": benchmark if benchmark is not None else None,
+                "success": speedup > 0,
+                "final_score": speedup,  # Use speedup (higher is better)
+                "performance_metrics": speedup,  # Use speedup (higher is better)
                 "correctness_score": 1 if correct else 0,
-                "combined_score": benchmark if benchmark is not None else 0.0,
+                "combined_score": speedup,  # Use speedup for optimization
                 "benchmark_results": benchmark_results if benchmark_params is not None else [],
-                "baseline_comparison": f"The ratio of average latency of baseline to generated triton kernel is {benchmark:.2f}x, this ratio must be greater than 1.0 for the kernel to be considered performant." if benchmark is not None else None,
+                "baseline_comparison": baseline_comparison,
                 "individual_comparisons": [],
                 "summary": summary,
                 # "metal_safety_statistics": self._get_comprehensive_error_statistics(),

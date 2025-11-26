@@ -1,0 +1,64 @@
+max_iterations: 3
+checkpoint_interval: 50
+log_level: WARNING
+log_dir: null
+random_seed: 42
+diff_based_evolution: true
+max_code_length: 50000
+llm:
+  models:
+  - name: claude-sonnet-4
+    weight: 1.0
+  evaluator_models:
+  - name: claude-sonnet-4
+    weight: 1.0
+  api_base: https://llm-api.amd.com/AnthropicVertex/deployments/claude-sonnet-4
+  api_key: null
+  temperature: 0.7
+  top_p: 0.95
+  max_tokens: 4096
+  timeout: 60
+  retries: 3
+  retry_delay: 5
+  sampling:
+    fn: random
+prompt:
+  template_dir: null
+  system_message: You are an expert coder helping to improve programs through evolution.
+  evaluator_system_message: You are an expert code reviewer.
+  num_top_programs: 3
+  num_diverse_programs: 2
+  use_template_stochasticity: true
+  template_variations:
+    improvement_suggestion:
+    - 'Here''s how we could improve this code:'
+    - 'I suggest the following improvements:'
+    - 'We can enhance this code by:'
+database:
+  db_path: program_database
+  in_memory: true
+  log_prompts: true
+  population_size: 50
+  archive_size: 100
+  num_islands: 4
+  migration_interval: 50
+  migration_rate: 0.1
+  elite_selection_ratio: 0.1
+  exploration_ratio: 0.2
+  exploitation_ratio: 0.7
+  feature_dimensions:
+  - score
+  - complexity
+  feature_bins: 10
+evaluator:
+  timeout: 300
+  max_retries: 3
+  cascade_evaluation: false
+  cascade_thresholds:
+  - 0.5
+  - 0.75
+  - 0.9
+  parallel_evaluations: 4
+  use_llm_feedback: false
+  llm_feedback_weight: 0.1
+  verbose: false
