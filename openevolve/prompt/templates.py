@@ -192,11 +192,17 @@ class TemplateManager:
 
     def _load_templates_from_dir(self, template_dir: str) -> None:
         """Load templates from a directory"""
+        import logging
+        logger = logging.getLogger(__name__)
+        
         for file_path in Path(template_dir).glob("*.txt"):
             template_name = file_path.stem
             with open(file_path, "r") as f:
-                print(f"Loading template: {template_name} from {file_path}")
-                self.templates[template_name] = f.read()
+                content = f.read()
+                self.templates[template_name] = content
+                msg = f"✅ Loaded template '{template_name}' from {file_path} ({len(content)} chars)"
+                print(msg, flush=True)
+                logger.info(msg)
 
     def get_template(self, template_name: str) -> str:
         """Get a template by name"""

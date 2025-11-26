@@ -36,7 +36,9 @@ except Exception as _e:
         "Triton must be installed with AMD/ROCm support "
     ) from _e
 
-import geak_eval  # Using GEAK-eval-OE evaluation framework 
+import geak_eval  # Using GEAK-eval-OE evaluation framework
+from geak_eval.constants import ROCm_DATA_ROOT, ROCm_DATA_AUTOTUNE_ROOT
+
 # ────────────────────────────────────────────────────────────────────────────
 # Exceptions (Triton / ROCm specific)
 # ────────────────────────────────────────────────────────────────────────────
@@ -80,7 +82,7 @@ class BulletproofTritonEvaluator:
     )
 
     # -------------------------------------------------
-    def __init__(self) -> None:
+    def __init__(self, kernel_filename: Optional[str] = None) -> None:
         self.triton_compile_errors: int = 0
         self.hip_runtime_errors: int = 0
         self.memory_violations: int = 0
@@ -93,8 +95,72 @@ class BulletproofTritonEvaluator:
         
         # Baseline file path (will be set during first evaluation)
         self._baseline_file: Optional[str] = None
+        
+        # Store kernel filename for test code merging
+        self._kernel_filename = kernel_filename
 
         print("🛡️ BULLETPROOF TRITON KERNEL EVALUATOR (AMD GPU) INITIALISED")
+
+    # ======================================================================
+    # Test code merging helper
+    # ======================================================================
+    def _merge_test_code(self, kernel_file_path: str, kernel_name: str) -> str:
+        """
+        Merge generated kernel code with appropriate test code based on autotune detection.
+        
+        Args:
+            kernel_file_path: Path to the file containing generated kernel code
+            kernel_name: Name of the kernel file (e.g., 'test_add_kernel.py')
+            
+        Returns:
+            Path to the merged file (same as input, overwritten)
+        """
+        # Read the generated kernel code
+        with open(kernel_file_path, 'r') as f:
+            kernel_code = f.read()
+        
+        # Detect if kernel uses @triton.autotune
+        has_autotune = "@triton.autotune" in kernel_code
+        
+        # Select appropriate test directory
+        if has_autotune:
+            test_dir = ROCm_DATA_AUTOTUNE_ROOT
+            print(f"✅ Detected @triton.autotune - using ROCm_v1_autotune tests")
+        else:
+            test_dir = ROCm_DATA_ROOT
+            print(f"✅ No @triton.autotune - using ROCm_v1 tests")
+        
+        # Construct path to test file
+        test_file_path = os.path.join(test_dir, kernel_name)
+        
+        if not os.path.exists(test_file_path):
+            print(f"⚠️ WARNING: Test file not found at {test_file_path}")
+            print(f"   Continuing with kernel-only code (may fail if tests are missing)")
+            return kernel_file_path
+        
+        # Read test code from the reference test file
+        # Extract only the test code (after the separator line)
+        with open(test_file_path, 'r') as f:
+            test_file_content = f.read()
+        
+        # Find the separator (146 '#' characters)
+        separator = '#' * 146
+        if separator in test_file_content:
+            test_code = test_file_content.split(separator)[1].strip()
+        else:
+            print(f"⚠️ WARNING: Could not find test separator in {test_file_path}")
+            print(f"   Using entire file as test code")
+            test_code = test_file_content
+        
+        # Merge kernel code with test code
+        merged_code = f"{kernel_code}\n\n{separator}\n\n{test_code}"
+        
+        # Write merged code back to the file
+        with open(kernel_file_path, 'w') as f:
+            f.write(merged_code)
+        
+        print(f"✅ Merged kernel with test code from {os.path.basename(test_dir)}")
+        return kernel_file_path
 
     # ======================================================================
     # Public entry-point used by OpenEvolve
@@ -132,6 +198,26 @@ class BulletproofTritonEvaluator:
                 print(f"Using program text from file: {program_text}")
 
             print(f"Evaluating Triton kernel from: {program_text}")
+            
+            # Determine kernel filename for test merging
+            # Extract from program_text (actual file being evaluated)
+            if self._kernel_filename:
+                kernel_name = self._kernel_filename
+            else:
+                # Extract filename from program_text (e.g., /path/test_kernel_sub.py -> test_kernel_sub.py)
+                kernel_name = os.path.basename(program_text)
+                print(f"📝 Extracted kernel name from program_text: {kernel_name}")
+                
+                # If that doesn't look like a test file, try test_suite_path as fallback
+                if not kernel_name.startswith("test_") or not kernel_name.endswith(".py"):
+                    if test_suite_path and os.path.exists(test_suite_path):
+                        kernel_name = os.path.basename(test_suite_path)
+                        print(f"📝 Using kernel name from test_suite_path instead: {kernel_name}")
+            
+            print(f"📝 Final kernel name for test merging: {kernel_name}")
+            
+            # Merge appropriate test code based on autotune detection
+            program_text = self._merge_test_code(program_text, kernel_name)
             
             # Run correctness tests using pytest
             env = os.environ.copy()
@@ -175,6 +261,15 @@ class BulletproofTritonEvaluator:
             kernel_dir = os.path.dirname(os.path.abspath(program_text))
             perf_dir = os.path.join(kernel_dir, "perf")
             
+            # Clean perf directory before running to avoid mixing results from different kernels
+            if os.path.exists(perf_dir):
+                print(f"Cleaning perf directory: {perf_dir}")
+                for old_file in os.listdir(perf_dir):
+                    if old_file.endswith('.json'):
+                        old_path = os.path.join(perf_dir, old_file)
+                        print(f"  Removing old perf file: {old_file}")
+                        os.remove(old_path)
+            
             # Run performance tests
             perf_cmd = [
                 "pytest", "-v", "-x", "--maxfail=1",
@@ -204,8 +299,12 @@ class BulletproofTritonEvaluator:
                 print(f"Found {len(perf_files)} JSON files: {perf_files}")
                 if perf_files:
                     import json
-                    latest_perf_file = os.path.join(perf_dir, sorted(perf_files)[-1])
-                    print(f"Reading performance data from: {latest_perf_file}")
+                    # Use most recently modified file (not alphabetical sort)
+                    # This ensures we get the file from THIS run, not a leftover from a previous kernel
+                    perf_files_with_mtime = [(f, os.path.getmtime(os.path.join(perf_dir, f))) for f in perf_files]
+                    latest_file = max(perf_files_with_mtime, key=lambda x: x[1])[0]
+                    latest_perf_file = os.path.join(perf_dir, latest_file)
+                    print(f"Reading performance data from: {latest_perf_file} (most recent)")
                     with open(latest_perf_file, 'r') as f:
                         perf_data = json.load(f)
                     
@@ -363,7 +462,12 @@ def evaluate(test_suite_path: str, program_text: str, ref_wrapper_path: str,
              wrapper_fn_name: str, unit_tests_path: str, n_warmup: int, n_iters: int,
              atol: float, rtol: float, verbose: bool, gpu_id: int = 0) -> Dict[str, Any]:
     """🛡️ BULLETPROOF evaluation function called by OpenEvolve"""
-    evaluator = BulletproofTritonEvaluator()
+    # Extract kernel filename from test_suite_path if available
+    kernel_filename = None
+    if test_suite_path and os.path.exists(test_suite_path):
+        kernel_filename = os.path.basename(test_suite_path)
+    
+    evaluator = BulletproofTritonEvaluator(kernel_filename=kernel_filename)
     return evaluator.evaluate(test_suite_path, program_text, ref_wrapper_path,
                              wrapper_fn_name, unit_tests_path, n_warmup, n_iters,
                              atol, rtol, verbose, gpu_id)

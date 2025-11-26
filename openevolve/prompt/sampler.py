@@ -96,11 +96,15 @@ class PromptSampler:
         # Use system template override if set
         if self.system_template_override:
             system_message = self.template_manager.get_template(self.system_template_override)
+            logger.info(f"🎯 Using system_message from template override: {self.system_template_override} ({len(system_message)} chars)")
         else:
             system_message = self.config.system_message
             # If system_message is a template name rather than content, get the template
             if system_message in self.template_manager.templates:
                 system_message = self.template_manager.get_template(system_message)
+                logger.info(f"🎯 Using system_message from template: 'system_message' ({len(system_message)} chars)")
+            else:
+                logger.info(f"🎯 Using system_message from config (inline): ({len(system_message)} chars)")
 
         # Format metrics
         metrics_str = self._format_metrics(program_metrics)
