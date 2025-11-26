@@ -255,9 +255,6 @@ class GaAgent(Reflexion_Oneshot):
 
             for mem in self.memories[start_idx:(start_idx + data_len)]:
                 if mem.raw_codes:
-                    # Extend history if descendant_num increased since initialization
-                    while len(mem.history) < len(mem.raw_codes):
-                        mem.history.append([])
                     for i in range(len(mem.raw_codes)):
                         raw_code = mem.raw_codes[i]
                         mem.history[i].append(raw_code)
@@ -370,9 +367,6 @@ class GaAgent(Reflexion_Oneshot):
 """
         
         if mem.raw_codes :
-            # Extend history if descendant_num increased since initialization
-            while len(mem.history) < len(mem.raw_codes):
-                mem.history.append([])
             for i in range(len(mem.raw_codes)):
                 raw_code = mem.raw_codes[i]
                 if  raw_code.reflections:
