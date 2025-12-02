@@ -323,7 +323,7 @@ class GaAgent_HIP(Reflexion_Oneshot_HIP):
         for i in range(descendant_num):
             gen_code = tempCode()
 
-            response = self.model.generate(msg, temperature=temperature, max_tokens=30000)
+            response = self.model.generate(msg, temperature=temperature, max_tokens=16384)
             try:
                 raw_code = [clear_json(response)["code"]]
             except:

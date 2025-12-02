@@ -1,13 +1,13 @@
 ancestor_num: 4
 api_base_url: https://api.anthropic.com/v1
-api_key: ${ANTHROPIC_API_KEY}
+api_key: YOUR_API_KEY_HERE
 corpus_path: ../example_hip
 descendant_num: 3
-instruction_path: /root/GEAK/results_transpose_naive/instruction.json
+instruction_path: /root/GEAK/results_silu/instruction.json
 max_iteration: 3
 max_tokens: 4096
 model_id: claude-sonnet-4-5
 multi_thread: false
-output_path: /root/GEAK/results_transpose_naive/iter
+output_path: /root/GEAK/results_silu/iter
 result_path: null
 temperature: 0.8

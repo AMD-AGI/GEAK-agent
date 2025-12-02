@@ -3,34 +3,19 @@
 #include <cstdlib>
 #include <chrono>
 
-#define TILE_DIM 32
-#define BLOCK_ROWS 8
-
 __global__ void transpose_naive_kernel(float* output, const float* input,
                                         int rows, int cols) {
-    __shared__ float tile[TILE_DIM][TILE_DIM + 1];
+    // Simple 1D flattened indexing
+    int idx = blockIdx.x * blockDim.x + threadIdx.x;
+    int total = rows * cols;
     
-    int x = blockIdx.x * TILE_DIM + threadIdx.x;
-    int y = blockIdx.y * TILE_DIM + threadIdx.y;
-    
-    // Load tile from input with coalesced reads
-    for (int i = 0; i < TILE_DIM; i += BLOCK_ROWS) {
-        if (x < cols && (y + i) < rows) {
-            tile[threadIdx.y + i][threadIdx.x] = input[(y + i) * cols + x];
-        }
-    }
-    
-    __syncthreads();
-    
-    // Transpose block coordinates
-    x = blockIdx.y * TILE_DIM + threadIdx.x;
-    y = blockIdx.x * TILE_DIM + threadIdx.y;
-    
-    // Write tile to output with coalesced writes and transposed read from shared memory
-    for (int i = 0; i < TILE_DIM; i += BLOCK_ROWS) {
-        if (x < rows && (y + i) < cols) {
-            output[(y + i) * rows + x] = tile[threadIdx.y + i][threadIdx.x];
-        }
+    if (idx < total) {
+        // Convert linear index to 2D coordinates
+        int row = idx / cols;
+        int col = idx % cols;
+        
+       
+        output[col * rows + row] = input[row * cols + col];
     }
 }
 
@@ -51,8 +36,10 @@ int main() {
     
     hipMemcpy(d_input, h_input, size, hipMemcpyHostToDevice);
     
-    dim3 block(TILE_DIM, BLOCK_ROWS);
-    dim3 grid((cols + TILE_DIM - 1) / TILE_DIM, (rows + TILE_DIM - 1) / TILE_DIM);
+
+    int total_elements = rows * cols;
+    dim3 block(64);
+    dim3 grid((total_elements + block.x - 1) / block.x);
     
     hipDeviceSynchronize();
     auto start = std::chrono::high_resolution_clock::now();

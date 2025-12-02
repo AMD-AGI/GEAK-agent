@@ -12,12 +12,6 @@
     "file_name": "gemm_naive.hip"
   },
   {
-    "task": "reduction_naive",
-    "instruction": "Optimize the naive reduction kernel. Current version uses only 32 threads per block and sequential reduction in thread 0 with atomicAdd. Key optimizations: increase block size to 256-1024, use parallel tree reduction in shared memory, use warp shuffle primitives, process multiple elements per thread. MUST keep kernel name: reduction_naive_kernel and signature: (float* output, const float* input, int size).",
-    "file_path": "reduction_naive",
-    "file_name": "reduction_naive.hip"
-  },
-  {
     "task": "softmax_naive",
     "instruction": "Optimize the naive softmax kernel. Current version uses only 32 threads per block with sequential reduction in thread 0. Key optimizations: increase block size to 256, use warp shuffle for parallel reduction, use vectorized loads. MUST keep kernel name: softmax_naive_kernel and signature: (float* output, const float* input, int batch_size, int feature_dim).",
     "file_path": "softmax_naive",
@@ -34,12 +28,6 @@
     "instruction": "Optimize the naive attention kernel. Current version uses flat indexing with small block size, no shared memory. Key optimizations: use 2D thread blocks, shared memory tiling for Q/K/V, fused softmax computation. MUST keep kernel names: attention_naive_kernel and attention_softmax_kernel.",
     "file_path": "attention_naive",
     "file_name": "attention_naive.hip"
-  },
-  {
-    "task": "layernorm_naive",
-    "instruction": "Optimize the naive LayerNorm kernel. Apply fused mean/variance computation, warp shuffle for reductions. MUST keep kernel name: layernorm_naive_kernel and signature: (float* output, const float* input, const float* gamma, const float* beta, int batch_size, int feature_dim, float epsilon).",
-    "file_path": "layernorm_naive",
-    "file_name": "layernorm_naive.hip"
   },
   {
     "task": "transpose_naive",

@@ -4,112 +4,62 @@
 #include <cmath>
 #include <chrono>
 
-#define TILE_SIZE 16
-#define BLOCK_SIZE 128
-
 __global__ void attention_naive_kernel(const float* query, const float* key,
                                         float* attention,
                                         int batch, int seq_len, int head_dim) {
-    int batch_idx = blockIdx.z;
-    int q_idx = blockIdx.y * blockDim.y + threadIdx.y;
-    int k_idx = blockIdx.x * blockDim.x + threadIdx.x;
+    int idx = blockIdx.x * blockDim.x + threadIdx.x;
+    int total = batch * seq_len * seq_len;
     
-    if (batch_idx >= batch || q_idx >= seq_len || k_idx >= seq_len) return;
+    if (idx >= total) return;
     
-    __shared__ float tile_q[TILE_SIZE][TILE_SIZE + 1];
-    __shared__ float tile_k[TILE_SIZE][TILE_SIZE + 1];
+    // Convert flat index to batch, query position, key position
+    int batch_idx = idx / (seq_len * seq_len);
+    int remainder = idx % (seq_len * seq_len);
+    int q_idx = remainder / seq_len;
+    int k_idx = remainder % seq_len;
     
     float score = 0.0f;
-    
-    for (int tile = 0; tile < (head_dim + TILE_SIZE - 1) / TILE_SIZE; tile++) {
-        int d = tile * TILE_SIZE + threadIdx.x;
-        if (q_idx < seq_len && d < head_dim) {
-            int q_pos = (batch_idx * seq_len + q_idx) * head_dim + d;
-            tile_q[threadIdx.y][threadIdx.x] = query[q_pos];
-        } else {
-            tile_q[threadIdx.y][threadIdx.x] = 0.0f;
-        }
-        
-        int d2 = tile * TILE_SIZE + threadIdx.y;
-        if (k_idx < seq_len && d2 < head_dim) {
-            int k_pos = (batch_idx * seq_len + k_idx) * head_dim + d2;
-            tile_k[threadIdx.x][threadIdx.y] = key[k_pos];
-        } else {
-            tile_k[threadIdx.x][threadIdx.y] = 0.0f;
-        }
-        
-        __syncthreads();
-        
-        #pragma unroll
-        for (int i = 0; i < TILE_SIZE; i++) {
-            score += tile_q[threadIdx.y][i] * tile_k[threadIdx.x][i];
-        }
-        
-        __syncthreads();
+    for (int d = 0; d < head_dim; d++) {
+        int q_pos = (batch_idx * seq_len + q_idx) * head_dim + d;
+        int k_pos = (batch_idx * seq_len + k_idx) * head_dim + d;
+        score += query[q_pos] * key[k_pos];
     }
     
-    if (q_idx < seq_len && k_idx < seq_len) {
-        float scale = 1.0f / sqrtf((float)head_dim);
-        int attn_idx = (batch_idx * seq_len + q_idx) * seq_len + k_idx;
-        attention[attn_idx] = score * scale;
-    }
+    // Scale by sqrt(head_dim)
+    float scale = 1.0f / sqrtf((float)head_dim);
+    attention[idx] = score * scale;
 }
 
 __global__ void attention_softmax_kernel(float* output, const float* value,
                                           const float* attention,
                                           int batch, int seq_len, int head_dim) {
-    int q_idx = blockIdx.x;
-    int batch_idx = blockIdx.y;
-    int tid = threadIdx.x;
+
+    int idx = blockIdx.x * blockDim.x + threadIdx.x;
+    int total = batch * seq_len;
     
-    if (batch_idx >= batch || q_idx >= seq_len) return;
+    if (idx >= total) return;
     
-    extern __shared__ float shared_mem[];
-    float* s_max_vals = shared_mem;
-    float* s_sum_vals = &shared_mem[BLOCK_SIZE];
+    int batch_idx = idx / seq_len;
+    int q_idx = idx % seq_len;
     
-    float local_max = -1e20f;
-    for (int k = tid; k < seq_len; k += blockDim.x) {
-        int attn_idx = (batch_idx * seq_len + q_idx) * seq_len + k;
-        local_max = fmaxf(local_max, attention[attn_idx]);
-    }
-    s_max_vals[tid] = local_max;
-    __syncthreads();
+    int attn_row = (batch_idx * seq_len + q_idx) * seq_len;
     
-    for (int stride = blockDim.x / 2; stride > 0; stride >>= 1) {
-        if (tid < stride) {
-            s_max_vals[tid] = fmaxf(s_max_vals[tid], s_max_vals[tid + stride]);
-        }
-        __syncthreads();
+    float max_val = -1e20f;
+    for (int k = 0; k < seq_len; k++) {
+        float val = attention[attn_row + k];
+        if (val > max_val) max_val = val;
     }
     
-    float max_val = s_max_vals[0];
-    __syncthreads();
-    
-    float local_sum = 0.0f;
-    for (int k = tid; k < seq_len; k += blockDim.x) {
-        int attn_idx = (batch_idx * seq_len + q_idx) * seq_len + k;
-        float exp_val = expf(attention[attn_idx] - max_val);
-        local_sum += exp_val;
-    }
-    s_sum_vals[tid] = local_sum;
-    __syncthreads();
-    
-    for (int stride = blockDim.x / 2; stride > 0; stride >>= 1) {
-        if (tid < stride) {
-            s_sum_vals[tid] += s_sum_vals[tid + stride];
-        }
-        __syncthreads();
+    float sum_exp = 0.0f;
+    for (int k = 0; k < seq_len; k++) {
+        sum_exp += expf(attention[attn_row + k] - max_val);
     }
     
-    float sum_val = s_sum_vals[0];
-    __syncthreads();
-    
-    for (int d = tid; d < head_dim; d += blockDim.x) {
+    // Compute output for each dimension
+    for (int d = 0; d < head_dim; d++) {
         float out_val = 0.0f;
         for (int k = 0; k < seq_len; k++) {
-            int attn_idx = (batch_idx * seq_len + q_idx) * seq_len + k;
-            float weight = expf(attention[attn_idx] - max_val) / sum_val;
+            float weight = expf(attention[attn_row + k] - max_val) / sum_exp;
             int v_pos = (batch_idx * seq_len + k) * head_dim + d;
             out_val += weight * value[v_pos];
         }
@@ -148,21 +98,20 @@ int main() {
     hipMemcpy(d_key, h_key, qkv_size, hipMemcpyHostToDevice);
     hipMemcpy(d_value, h_value, qkv_size, hipMemcpyHostToDevice);
     
-    dim3 block1(TILE_SIZE, TILE_SIZE);
-    dim3 grid1((seq_len + TILE_SIZE - 1) / TILE_SIZE, 
-               (seq_len + TILE_SIZE - 1) / TILE_SIZE, 
-               batch);
+    int total_attn = batch * seq_len * seq_len;
+    dim3 block1(64);
+    dim3 grid1((total_attn + 63) / 64);
     
-    dim3 block2(BLOCK_SIZE);
-    dim3 grid2(seq_len, batch);
-    size_t shared_mem_size = 2 * BLOCK_SIZE * sizeof(float);
+    int total_rows = batch * seq_len;
+    dim3 block2(32);
+    dim3 grid2((total_rows + 31) / 32);
     
     hipDeviceSynchronize();
     auto start = std::chrono::high_resolution_clock::now();
     
     for (int i = 0; i < 10; i++) {
         attention_naive_kernel<<<grid1, block1>>>(d_query, d_key, d_attention, batch, seq_len, head_dim);
-        attention_softmax_kernel<<<grid2, block2, shared_mem_size>>>(d_output, d_value, d_attention, batch, seq_len, head_dim);
+        attention_softmax_kernel<<<grid2, block2>>>(d_output, d_value, d_attention, batch, seq_len, head_dim);
     }
     hipDeviceSynchronize();
     

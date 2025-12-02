@@ -271,7 +271,7 @@ class OptimAgent_HIP(Reflexion_Oneshot_HIP):
             {"role": "user", "content": text},
         ]
 
-        response = self.model.generate(msg, temperature=temperature, max_tokens=30000)
+        response = self.model.generate(msg, temperature=temperature, max_tokens=16384)
 
         try:
             mem.raw_code = [clear_json(response)["code"]]

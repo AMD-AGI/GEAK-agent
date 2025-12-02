@@ -332,7 +332,7 @@ class OptimAgent(Reflexion_Oneshot):
         ]
 
         try:
-            response = self.model.generate(msg, temperature=temperature, max_tokens=30000)
+            response = self.model.generate(msg, temperature=temperature, max_tokens=16384)
         except:
             logger.info(f"failed to call LLM for {mem.ps.filename}")
             response = {"code": ""}

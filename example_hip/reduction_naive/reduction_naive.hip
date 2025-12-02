@@ -3,58 +3,28 @@
 #include <cstdlib>
 #include <chrono>
 
-#define BLOCK_SIZE 256
-#define ELEMENTS_PER_THREAD 4
-
-__inline__ __device__ float warpReduceSum(float val) {
-    for (int offset = warpSize/2; offset > 0; offset >>= 1) {
-        val += __shfl_down(val, offset);
-    }
-    return val;
-}
-
 __global__ void reduction_naive_kernel(float* output, const float* input, int size) {
+    __shared__ float shared_data[32];  // Small shared memory for 32 threads
+    
     int tid = threadIdx.x;
-    int gid = blockIdx.x * blockDim.x * ELEMENTS_PER_THREAD + tid;
+    int gid = blockIdx.x * blockDim.x + tid;
     
-    __shared__ float shared_data[BLOCK_SIZE];
-    
-    // Each thread loads and sums multiple elements
-    float sum = 0.0f;
-    #pragma unroll
-    for (int i = 0; i < ELEMENTS_PER_THREAD; i++) {
-        int idx = gid + i * blockDim.x;
-        if (idx < size) {
-            sum += input[idx];
-        }
+    // Each thread loads one element
+    if (gid < size) {
+        shared_data[tid] = input[gid];
+    } else {
+        shared_data[tid] = 0.0f;
     }
-    
-    shared_data[tid] = sum;
     __syncthreads();
     
-    // Parallel tree reduction in shared memory
-    for (int stride = blockDim.x / 2; stride > warpSize; stride >>= 1) {
-        if (tid < stride) {
-            shared_data[tid] += shared_data[tid + stride];
-        }
-        __syncthreads();
-    }
     
-    // Final reduction at warp level
-    if (tid < warpSize) {
-        float val = shared_data[tid];
-        // Accumulate remaining elements into first warp
-        for (int i = warpSize; i < blockDim.x; i += warpSize) {
-            if (tid + i < blockDim.x) {
-                val += shared_data[tid + i];
-            }
+    if (tid == 0) {
+        float sum = 0.0f;
+        for (int i = 0; i < blockDim.x; i++) {
+            sum += shared_data[i];
         }
-        // Warp-level reduction using shuffle intrinsics
-        val = warpReduceSum(val);
-        
-        if (tid == 0) {
-            atomicAdd(output, val);
-        }
+        // Use atomicAdd to accumulate across blocks (slow!)
+        atomicAdd(output, sum);
     }
 }
 
@@ -73,8 +43,8 @@ int main() {
     
     hipMemcpy(d_input, h_input, bytes, hipMemcpyHostToDevice);
     
-    dim3 block(BLOCK_SIZE);
-    dim3 grid((size + BLOCK_SIZE * ELEMENTS_PER_THREAD - 1) / (BLOCK_SIZE * ELEMENTS_PER_THREAD));
+    dim3 block(32);
+    dim3 grid((size + block.x - 1) / block.x);
     
     hipDeviceSynchronize();
     auto start = std::chrono::high_resolution_clock::now();

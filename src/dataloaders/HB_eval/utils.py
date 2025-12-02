@@ -62,12 +62,23 @@ def extract_perf_validation(task_name, stdout):
         efficiency = perf / base_perf
 
     elif task_name == "silu":
-        time_match = re.search(r"Perf:\s*([\d.]+)\s*us/launch", stdout)
+        time_match = re.search(r"Perf:\s*([\d.]+)\s*ms", stdout)
         perf = float(time_match.group(1)) if time_match else None
 
         validation_result = "PASS" in stdout
-        base_perf =  float('inf') # FAKE number, test your unittest in target env and put the number here.
-        efficiency = perf / base_perf
+        base_perf = float('inf') # FAKE number, test your unittest in target env and put the number here.
+        efficiency = perf / base_perf if perf else None
+
+    elif task_name in ["gemm_naive", "reduction_naive", "softmax_naive", "conv_naive", 
+                       "attention_naive", "layernorm_naive", "transpose_naive"]:
+        # Naive kernels output: "Perf: X.XXXX ms"
+        time_match = re.search(r"Perf:\s*([\d.]+)\s*ms", stdout)
+        perf = float(time_match.group(1)) if time_match else None
+
+        # Check for PASS or absence of FAIL
+        validation_result = ("PASS" in stdout) or ("FAIL" not in stdout and perf is not None)
+        base_perf = float('inf')
+        efficiency = perf / base_perf if perf else None
 
     elif task_name == "bitonic_sort":
         time_match = re.search(r"GPU bitonic sort took ([\d.]+) milliseconds", stdout)
@@ -377,6 +388,38 @@ def code_call_exec_success_allclose(code, fname, temp_root, py_folder, task_name
         compile_cmd = "make example_gemm_multiply_multiply_xdl_fp8_ab_scale"
         perf_cmd = "./bin/example_gemm_multiply_multiply_xdl_fp8_ab_scale"
         cwd = os.path.join(re.search(r".*?/composable_kernel", compile_path).group(0), "build")
+    elif task_name == "silu":
+        compile_cmd = "make"
+        perf_cmd = "./test_silu"
+        cwd = compile_path
+    elif task_name == "gemm_naive":
+        compile_cmd = "make"
+        perf_cmd = "./test_gemm"
+        cwd = compile_path
+    elif task_name == "reduction_naive":
+        compile_cmd = "make"
+        perf_cmd = "./test_reduction"
+        cwd = compile_path
+    elif task_name == "softmax_naive":
+        compile_cmd = "make"
+        perf_cmd = "./test_softmax"
+        cwd = compile_path
+    elif task_name == "conv_naive":
+        compile_cmd = "make"
+        perf_cmd = "./test_conv"
+        cwd = compile_path
+    elif task_name == "attention_naive":
+        compile_cmd = "make"
+        perf_cmd = "./test_attention"
+        cwd = compile_path
+    elif task_name == "layernorm_naive":
+        compile_cmd = "make"
+        perf_cmd = "./test_layernorm"
+        cwd = compile_path
+    elif task_name == "transpose_naive":
+        compile_cmd = "make"
+        perf_cmd = "./test_transpose"
+        cwd = compile_path
     else:
         # this is the default pipeline that works with rocm-example/applications/tasks. 
         # if you would like a quick run, you could put your kernels exactly like the one in rocm-example

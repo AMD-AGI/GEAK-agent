@@ -14,11 +14,9 @@
 
 using bf16 = __hip_bfloat16;
 
-__device__ __forceinline__ float silu_f(float x){
-  float neg_x = -x;
-  float exp_neg_x = expf(neg_x);
-  float sigmoid = 1.0f / (1.0f + exp_neg_x);
-  return x * sigmoid;
+
+__device__ float silu_f(float x){
+  return x / (1.0f + exp(-x));  
 }
 
 __global__ void silu_mul_kernel(
@@ -35,56 +33,20 @@ __global__ void silu_mul_kernel(
   const int64_t out_base = b * H;
   
   int64_t tid = threadIdx.x;
-  int64_t stride = blockDim.x * 4;
+  int64_t stride = blockDim.x;  
   
-  // Main loop: process 4 elements per thread per iteration
-  for (int64_t h = tid * 4; h + 3 < H; h += stride) {
-    bf16 x0 = in[x_base + h];
-    bf16 x1 = in[x_base + h + 1];
-    bf16 x2 = in[x_base + h + 2];
-    bf16 x3 = in[x_base + h + 3];
+
+  for (int64_t h = tid; h < H; h += stride) {
+    bf16 x_bf = in[x_base + h];
+    bf16 y_bf = in[y_base + h];
     
-    bf16 y0 = in[y_base + h];
-    bf16 y1 = in[y_base + h + 1];
-    bf16 y2 = in[y_base + h + 2];
-    bf16 y3 = in[y_base + h + 3];
+    float x_val = __bfloat162float(x_bf);
+    float y_val = __bfloat162float(y_bf);
     
-    float x_val0 = __bfloat162float(x0);
-    float x_val1 = __bfloat162float(x1);
-    float x_val2 = __bfloat162float(x2);
-    float x_val3 = __bfloat162float(x3);
+    float silu_x = silu_f(x_val);
+    float result = silu_x * y_val;
     
-    float y_val0 = __bfloat162float(y0);
-    float y_val1 = __bfloat162float(y1);
-    float y_val2 = __bfloat162float(y2);
-    float y_val3 = __bfloat162float(y3);
-    
-    float silu_x0 = silu_f(x_val0);
-    float silu_x1 = silu_f(x_val1);
-    float silu_x2 = silu_f(x_val2);
-    float silu_x3 = silu_f(x_val3);
-    
-    out[out_base + h] = __float2bfloat16(silu_x0 * y_val0);
-    out[out_base + h + 1] = __float2bfloat16(silu_x1 * y_val1);
-    out[out_base + h + 2] = __float2bfloat16(silu_x2 * y_val2);
-    out[out_base + h + 3] = __float2bfloat16(silu_x3 * y_val3);
-  }
-  
-  // Handle remaining elements
-  for (int64_t h = tid * 4; h < H; h += stride) {
-    if (h + 3 >= H) {
-      for (int64_t i = 0; i < 4 && h + i < H; i++) {
-        int64_t idx = h + i;
-        bf16 x_val_bf = in[x_base + idx];
-        bf16 y_val_bf = in[y_base + idx];
-        
-        float x_val = __bfloat162float(x_val_bf);
-        float y_val = __bfloat162float(y_val_bf);
-        
-        float silu_x = silu_f(x_val);
-        out[out_base + idx] = __float2bfloat16(silu_x * y_val);
-      }
-    }
+    out[out_base + h] = __float2bfloat16(result);
   }
 }
 
@@ -156,7 +118,7 @@ int main(int argc, char** argv){
   HIP_CHECK(hipMalloc(&d_out, out_e*sizeof(bf16)));
   HIP_CHECK(hipMemcpy(d_in, h_in.data(), in_e*sizeof(bf16), hipMemcpyHostToDevice));
 
-  dim3 block(256);
+  dim3 block(32);
   dim3 grid(B);
   
   auto launch = [&](){

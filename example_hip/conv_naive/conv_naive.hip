@@ -3,73 +3,48 @@
 #include <cstdlib>
 #include <chrono>
 
-#define BLOCK_SIZE 256
-#define REG_BLOCK 4
-#define MAX_KERNEL_SIZE 11
-
+// Each thread computes one output pixel
 __global__ void conv2d_naive_kernel(float* output, const float* input, const float* kernel,
                                      int batch, int in_channels, int out_channels,
                                      int height, int width, int kernel_size,
                                      int out_height, int out_width, int padding, int stride) {
-    __shared__ float s_kernel[MAX_KERNEL_SIZE * MAX_KERNEL_SIZE];
     
-    int tid = threadIdx.x;
-    int block_id = blockIdx.x;
-    int total_outputs = batch * out_channels * out_height * out_width;
-    int base_idx = block_id * BLOCK_SIZE * REG_BLOCK + tid * REG_BLOCK;
+
+    int idx = blockIdx.x * blockDim.x + threadIdx.x;
+    int total = out_channels * out_height * out_width;
     
-    int indices[REG_BLOCK];
-    int ow[REG_BLOCK], oh[REG_BLOCK], oc[REG_BLOCK], b[REG_BLOCK];
-    float sum[REG_BLOCK];
+    if (idx >= total) return;
     
-    for (int r = 0; r < REG_BLOCK; r++) {
-        indices[r] = base_idx + r;
-        sum[r] = 0.0f;
-        
-        if (indices[r] < total_outputs) {
-            ow[r] = indices[r] % out_width;
-            oh[r] = (indices[r] / out_width) % out_height;
-            oc[r] = (indices[r] / (out_width * out_height)) % out_channels;
-            b[r] = indices[r] / (out_width * out_height * out_channels);
-        }
-    }
+    // Convert flat index to output coordinates
+    int oc = idx / (out_height * out_width);
+    int remainder = idx % (out_height * out_width);
+    int oh = remainder / out_width;
+    int ow = remainder % out_width;
+    int b = 0;  // batch = 1 for simplicity
     
+    float sum = 0.0f;
+
     for (int ic = 0; ic < in_channels; ic++) {
-        int kernel_elements = kernel_size * kernel_size;
-        
-        for (int r = 0; r < REG_BLOCK; r++) {
-            if (indices[r] < total_outputs) {
-                int first_oc = oc[r];
+        for (int ky = 0; ky < kernel_size; ky++) {
+            for (int kx = 0; kx < kernel_size; kx++) {
+                int ih = oh * stride + ky - padding;
+                int iw = ow * stride + kx - padding;
                 
-                for (int i = tid; i < kernel_elements; i += BLOCK_SIZE) {
-                    int kernel_idx = ((first_oc * in_channels + ic) * kernel_size * kernel_size) + i;
-                    s_kernel[i] = kernel[kernel_idx];
+                if (ih >= 0 && ih < height && iw >= 0 && iw < width) {
+               
+                    int input_idx = ((b * in_channels + ic) * height + ih) * width + iw;
+                   
+                    int kernel_idx = ((oc * in_channels + ic) * kernel_size + ky) * kernel_size + kx;
+                    
+                    sum += input[input_idx] * kernel[kernel_idx];
                 }
-                __syncthreads();
-                
-                for (int ky = 0; ky < kernel_size; ky++) {
-                    for (int kx = 0; kx < kernel_size; kx++) {
-                        int ih = oh[r] * stride + ky - padding;
-                        int iw = ow[r] * stride + kx - padding;
-                        
-                        if (ih >= 0 && ih < height && iw >= 0 && iw < width) {
-                            int input_idx = ((b[r] * in_channels + ic) * height + ih) * width + iw;
-                            int k_idx = ky * kernel_size + kx;
-                            sum[r] += input[input_idx] * s_kernel[k_idx];
-                        }
-                    }
-                }
-                __syncthreads();
-                break;
             }
         }
     }
     
-    for (int r = 0; r < REG_BLOCK; r++) {
-        if (indices[r] < total_outputs) {
-            output[indices[r]] = sum[r];
-        }
-    }
+    // Write output
+    int out_idx = ((b * out_channels + oc) * out_height + oh) * out_width + ow;
+    output[out_idx] = sum;
 }
 
 int main() {
@@ -105,9 +80,9 @@ int main() {
     hipMemcpy(d_input, h_input, input_size, hipMemcpyHostToDevice);
     hipMemcpy(d_kernel, h_kernel, kernel_size_bytes, hipMemcpyHostToDevice);
     
-    int total = batch * out_channels * out_height * out_width;
-    dim3 block(BLOCK_SIZE);
-    dim3 grid((total + BLOCK_SIZE * REG_BLOCK - 1) / (BLOCK_SIZE * REG_BLOCK));
+    int total_output = out_channels * out_height * out_width;
+    dim3 block(64);
+    dim3 grid((total_output + 63) / 64);
     
     hipDeviceSynchronize();
     auto start = std::chrono::high_resolution_clock::now();

@@ -426,7 +426,7 @@ Error Message: {raw_code.test_stderr}
     def call_llm_code(self, prompt, temperature):
         msg = [{"role": "user", "content": prompt}]
         try:
-            response = self.model.generate(msg, temperature=temperature, max_tokens=30000)
+            response = self.model.generate(msg, temperature=temperature, max_tokens=16384)
             opti = clear_json(response)
             if 'code' in opti.keys() and  'strategy' in opti.keys():
                 code = clear_code(opti['code'])
@@ -439,7 +439,7 @@ Error Message: {raw_code.test_stderr}
     def call_llm_reflecion(self, prompt, temperature):
         msg = [{"role": "user", "content": prompt}]
         try:
-            response = self.model.generate(msg, temperature=temperature, max_tokens=30000)
+            response = self.model.generate(msg, temperature=temperature, max_tokens=16384)
             opti = clear_json(response)
             if 'reflection' in opti.keys():
                 reflection = opti['reflection']

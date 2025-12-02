@@ -32,12 +32,16 @@ class PublicLLMModel(BaseModel):
         'o3-mini': 100000,
         'o3-pro': 100000,
         # Claude models
-        'claude-3-5-sonnet-20241022': 32768,
-        'claude-3-5-sonnet-20240620': 32768,
-        'claude-3-5-haiku-20241022': 32768,
-        'claude-3-opus-20240229': 32768,
-        'claude-3-sonnet-20240229': 32768,
-        'claude-3-haiku-20240307': 32768,
+        'claude-sonnet-4-5': 16384,  # Claude 4.5 Sonnet - 16K output tokens
+        'claude-sonnet-4-5-20250514': 16384,
+        'claude-opus-4': 32768,  # Claude 4 Opus
+        'claude-3-7-sonnet': 32768,  # Claude 3.7 Sonnet
+        'claude-3-5-sonnet-20241022': 8192,
+        'claude-3-5-sonnet-20240620': 8192,
+        'claude-3-5-haiku-20241022': 8192,
+        'claude-3-opus-20240229': 4096,
+        'claude-3-sonnet-20240229': 4096,
+        'claude-3-haiku-20240307': 4096,
     }
 
     def __init__(self, model_id=None, api_key=None, provider=None):

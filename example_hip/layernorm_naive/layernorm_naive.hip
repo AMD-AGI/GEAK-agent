@@ -4,11 +4,34 @@
 #include <cmath>
 #include <chrono>
 
-__inline__ __device__ float warpReduceSum(float val) {
+#define WARP_SIZE 64
+
+__device__ __forceinline__ float warpReduceSum(float val) {
     #pragma unroll
-    for (int offset = 32; offset > 0; offset >>= 1) {
-        val += __shfl_down(val, offset, 64);
+    for (int offset = WARP_SIZE / 2; offset > 0; offset /= 2) {
+        val += __shfl_down(val, offset, WARP_SIZE);
     }
+    return val;
+}
+
+__device__ __forceinline__ float blockReduceSum(float val) {
+    __shared__ float shared[4];
+    int lane = threadIdx.x % WARP_SIZE;
+    int wid = threadIdx.x / WARP_SIZE;
+    
+    val = warpReduceSum(val);
+    
+    if (lane == 0) shared[wid] = val;
+    __syncthreads();
+    
+    if (threadIdx.x < blockDim.x / WARP_SIZE) {
+        val = shared[lane];
+    } else {
+        val = 0.0f;
+    }
+    
+    if (wid == 0) val = warpReduceSum(val);
+    
     return val;
 }
 
@@ -17,59 +40,62 @@ __global__ void layernorm_naive_kernel(float* output, const float* input,
                                         int batch_size, int feature_dim, float epsilon) {
     int batch_idx = blockIdx.x;
     int tid = threadIdx.x;
-    int lane = tid & 63;
-    int warp_id = tid >> 6;
     
     if (batch_idx >= batch_size) return;
     
     int row_offset = batch_idx * feature_dim;
     
-    const int num_warps = (blockDim.x + 63) >> 6;
-    __shared__ float shared_data[8];
+    // Vectorized pointers
+    const float4* input4 = reinterpret_cast<const float4*>(input + row_offset);
+    float4* output4 = reinterpret_cast<float4*>(output + row_offset);
+    const float4* gamma4 = reinterpret_cast<const float4*>(gamma);
+    const float4* beta4 = reinterpret_cast<const float4*>(beta);
+    int feature_dim4 = feature_dim / 4;
     
-    // Fused pass: compute sum and sum of squares
+    // Fused pass: Compute sum and sum of squares with vectorized loads
     float thread_sum = 0.0f;
-    float thread_sum_sq = 0.0f;
-    for (int i = tid; i < feature_dim; i += blockDim.x) {
-        float val = input[row_offset + i];
-        thread_sum += val;
-        thread_sum_sq += val * val;
+    float thread_sq_sum = 0.0f;
+    
+    #pragma unroll 2
+    for (int i = tid; i < feature_dim4; i += blockDim.x) {
+        float4 val = input4[i];
+        thread_sum += val.x + val.y + val.z + val.w;
+        thread_sq_sum += val.x * val.x + val.y * val.y + val.z * val.z + val.w * val.w;
     }
     
-    // Warp-level reduction for sum
-    float warp_sum = warpReduceSum(thread_sum);
-    float warp_sum_sq = warpReduceSum(thread_sum_sq);
-    
-    // First thread in each warp writes to shared memory
-    if (lane == 0) {
-        shared_data[warp_id] = warp_sum;
-        shared_data[warp_id + 4] = warp_sum_sq;
-    }
-    __syncthreads();
-    
-    // Final reduction in first warp
-    float mean, inv_std;
-    if (tid < num_warps) {
-        float val_sum = (tid < num_warps) ? shared_data[tid] : 0.0f;
-        float val_sum_sq = (tid < num_warps) ? shared_data[tid + 4] : 0.0f;
-        val_sum = warpReduceSum(val_sum);
-        val_sum_sq = warpReduceSum(val_sum_sq);
-        if (tid == 0) {
-            mean = val_sum / feature_dim;
-            float variance = (val_sum_sq / feature_dim) - (mean * mean);
-            inv_std = rsqrtf(variance + epsilon);
-            shared_data[0] = mean;
-            shared_data[1] = inv_std;
-        }
+    // Reduce sum
+    float total_sum = blockReduceSum(thread_sum);
+    __shared__ float s_mean;
+    if (tid == 0) {
+        s_mean = total_sum / feature_dim;
     }
     __syncthreads();
-    mean = shared_data[0];
-    inv_std = shared_data[1];
+    float mean = s_mean;
     
-    // Normalize and apply affine transformation
-    for (int i = tid; i < feature_dim; i += blockDim.x) {
-        float normalized = (input[row_offset + i] - mean) * inv_std;
-        output[row_offset + i] = gamma[i] * normalized + beta[i];
+    // Reduce sum of squares
+    float total_sq_sum = blockReduceSum(thread_sq_sum);
+    __shared__ float s_inv_std;
+    if (tid == 0) {
+        float variance = (total_sq_sum / feature_dim) - (mean * mean);
+        s_inv_std = rsqrtf(variance + epsilon);
+    }
+    __syncthreads();
+    float inv_std = s_inv_std;
+    
+    // Normalize and apply affine transformation with vectorized operations
+    #pragma unroll 2
+    for (int i = tid; i < feature_dim4; i += blockDim.x) {
+        float4 val = input4[i];
+        float4 g = gamma4[i];
+        float4 b = beta4[i];
+        
+        float4 result;
+        result.x = g.x * ((val.x - mean) * inv_std) + b.x;
+        result.y = g.y * ((val.y - mean) * inv_std) + b.y;
+        result.z = g.z * ((val.z - mean) * inv_std) + b.z;
+        result.w = g.w * ((val.w - mean) * inv_std) + b.w;
+        
+        output4[i] = result;
     }
 }
 
