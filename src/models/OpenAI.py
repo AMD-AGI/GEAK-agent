@@ -1,5 +1,6 @@
 from typing import List
 import openai
+import os
 from tenacity import retry, stop_after_attempt, wait_random_exponential
 
 from models.Base import BaseModel
@@ -45,20 +46,23 @@ class OpenAIModel(BaseModel):
         self.model_id = model_id
         self.model_api_version = model_api_version
 
-        url = 'https://llm-api.amd.com'
-        headers = {
-            'Ocp-Apim-Subscription-Key': api_key 
-        }
-        model_api_version = '2024-06-01'
+        url = "https://llm-api.amd.com/OnPrem"
         
+        try:
+            user = os.getlogin()
+        except Exception:
+            user = os.environ.get("USER", "unknown_user")
 
-        self.client = openai.AzureOpenAI(
-            api_key='dummy',
-            api_version=self.model_api_version,
+        headers = {
+            "Ocp-Apim-Subscription-Key": api_key,
+            "user": user
+        }
+
+        self.client = openai.OpenAI(
             base_url=url,
+            api_key="dummy",
             default_headers=headers
         )
-        self.client.base_url = '{0}/openai/deployments/{1}'.format(url, self.model_id)
     
     @retry(wait=wait_random_exponential(min=1, max=60), stop=stop_after_attempt(5))
     def generate(self, 
@@ -88,4 +92,3 @@ class OpenAIModel(BaseModel):
             raise ValueError("No response choices returned from the API.")
 
         return response.choices[0].message.content
-    

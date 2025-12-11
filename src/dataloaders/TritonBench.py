@@ -9,7 +9,7 @@ from multiprocessing import Pool, Lock, Value
 from dataloaders.ProblemState import ProblemState
 from dataloaders.TB_eval.utils import code_call_exec_success_allclose, code_kernel_profiling
 import re
-from tb_eval.evaluators.interface import get_evaluators
+from geak_eval.evaluators.interface import get_evaluators
 
 class TritonBench:
     def __init__(self,

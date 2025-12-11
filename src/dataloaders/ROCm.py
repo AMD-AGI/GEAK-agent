@@ -7,9 +7,9 @@ from multiprocessing import Pool, Lock, Value
 
 # Assuming these are in your project structure
 from dataloaders.ProblemState import ProblemStateROCm
-from tb_eval.evaluators.interface import get_evaluators
-from tb_eval.helpers.helper import extract_first_pytest_failure
-from tb_eval.perf.efficiency import get_perf_evaluators
+from geak_eval.evaluators.interface import get_evaluators
+from geak_eval.helpers.helper import extract_first_pytest_failure
+from geak_eval.perf.efficiency import get_perf_evaluators
 
 class ROCm:
     def __init__(self,
@@ -28,7 +28,7 @@ class ROCm:
         self.problem_states = self.load_ps()
         self.log_root = log_root
         
-        # Initialize correctness and performance evaluators from tb_eval
+        # Initialize correctness and performance evaluators from geak_eval
         self.evaluator = get_evaluators["rocm"]()
         self.perf_evaluator = get_perf_evaluators["rocm"]()
         logger.info("Custom tests path set to: {}".format(self.py_folder))
@@ -42,7 +42,7 @@ class ROCm:
         for line in instructions:
             instruction = line["instruction"]
             label = line["label"]
-            opname = line["opname"]
+            opname = line.get("opname", line.get("file"))
             g = label.replace("<|im_end|>", "").replace("<|EOT|>", "")
             tmp = False
             for item in statis_data:
@@ -102,12 +102,11 @@ class ROCm:
             exec_root_eval = os.path.abspath(os.path.join(tmp_dir, "exec_eval"))
             os.makedirs(exec_root_eval, exist_ok=True)
             # import pdb; pdb.set_trace()
-            call_status, exec_status, stdout, stderr = self.evaluator(code, log_root, exec_root_eval, filename, opname=opname, atol=1e-2, rtol=1e-2, custom_tests_path=self.py_folder, gpu_id=gpu_id)
-            # import ipdb;ipdb.set_trace(context=200)
+            call_status, exec_status, stdout, stderr = self.evaluator(code, log_root, exec_root_eval, filename, atol=1e-2, rtol=1e-2, custom_tests_path=self.py_folder)
             if exec_status and save_scripts:
                 # The evaluator already saves the file, but we copy it to the agent's expected directory
-                src_file = os.path.join(exec_root_eval, opname)
-                dst_file = os.path.join(exe_dir, opname)
+                src_file = os.path.join(exec_root_eval, filename)
+                dst_file = os.path.join(exe_dir, filename)
                 if os.path.exists(src_file):
                     shutil.copy(src_file, dst_file)
             
