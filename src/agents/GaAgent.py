@@ -541,6 +541,8 @@ runnable test: {err_msg}
                     try:
                         response = self.model.generate(msg, temperature=temperature, max_tokens=30000)
                         llm_eval = clear_json(response)
+                        if not isinstance(llm_eval, dict):
+                            raise ValueError(f"Parsed JSON is not a dict: {llm_eval}")
                         metric = 0.0
                         for k, v in llm_eval.items():
                             if k == "reasoning":
@@ -549,6 +551,8 @@ runnable test: {err_msg}
                                 metric += float(v)
                         raw_code.llm_metric = metric
                         raw_code.llm_eval = llm_eval
-                    except:
-                        logger.info(f"failed to generate LLM evaluation")
+                    except Exception as e:
+                        logger.info(f"failed to generate LLM evaluation: {e}")
+                        if 'response' in locals():
+                            logger.info(f"Response content: {response}")
                         raise ValueError("failed to generate LLM evaluation")

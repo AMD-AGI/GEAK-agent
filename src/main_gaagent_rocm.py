@@ -8,13 +8,13 @@ from dataloaders.ROCm import ROCm
 import os
 
 def main():
-    args = load_config("configs/rocm_gaagent_config.yaml")
+    args = load_config("configs/rocm_gaagent_config_new.yaml")
     args.log_root = os.path.abspath(args.output_path).replace(".jsonl", "")
     os.makedirs(args.log_root, exist_ok=True)
     print(args)
 
     # setup LLM model
-    model = ClaudeModel(api_key=args.api_key, model_id=args.model_id)
+    model = OpenAIModel(api_key=args.api_key, model_id=args.model_id)
 
     # setup dataset
     # dataset = TritonBench(statis_path=args.statis_path, 

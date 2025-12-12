@@ -40,13 +40,11 @@ class StandardOpenAIModel(BaseModel):
 class OpenAIModel(BaseModel):
     def __init__(self, 
                  model_id="GPT4o", 
-                 model_api_version='2024-06-01', 
                  api_key=None):
         assert api_key is not None, "no api key is provided."
         self.model_id = model_id
-        self.model_api_version = model_api_version
 
-        url = "https://llm-api.amd.com/OnPrem"
+        url = "https://llm-api.amd.com/OpenAI"
         
         try:
             user = os.getlogin()

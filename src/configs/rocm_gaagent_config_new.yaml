@@ -1,0 +1,28 @@
+# LLM model
+api_key: "efda07b64df94bef99096a9f1e3669a7"
+model_id: GPT-5.1
+temperature: 1.0
+
+# dataloader
+statis_path: "../../GEAK-eval/geak_eval/data/ROCm/data/ROCm_eval_complex_instruct_v1.json"
+py_folder: "../../GEAK-eval/geak_eval/data/ROCm/data/ROCm_v1"
+instruction_path: "../../GEAK-eval/geak_eval/data/ROCm/data/ROCm_eval_complex_instruct_v1.json"
+corpus_path: "../../GEAK-eval/geak_eval/data/TritonBench/data/train_crawl.json"
+py_interpreter: "python"
+
+
+# agent
+result_path: null
+mem_file: null
+start_iter: 0
+start_idx: 0
+datalen: null
+output_path: "../outputs/20251011_gaagent_rocm_claude4.jsonl"
+max_iteration: 5
+multi_thread: true
+ancestor_num: 5
+descendant_num: 5
+gpu_id: 5
+descendant_debug: 1
+target_gpu: "MI350X"
+profiling: False

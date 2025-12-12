@@ -45,6 +45,8 @@ class BM25Retriever:
             )
         
         # Preprocess query similarly to how documents were processed
+        if query is None:
+            query = ""
         processed_query = query.split(" ")
         # Retrieve documents based on BM25 scores
         scores = self.bm25.get_scores(processed_query)
@@ -64,5 +66,4 @@ class BM25Retriever:
         formatted_results.sort(
             key=lambda x: x['similarity score'], reverse=True
         )
-
         return formatted_results

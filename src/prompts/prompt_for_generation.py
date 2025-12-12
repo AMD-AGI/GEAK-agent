@@ -51,7 +51,7 @@ Before completing, verify:
 
 system_prompt = """\nThink before writing the optimization and no more explanation is required after the thinking. 
 You should not suggest changes to the name of the function and parameter names, counts, or order.
-Output your answer in json format, with the format as follows: {\"strategy\": \"\", \"code\": \"\"}. Please strictly output in JSON format.
+Output your answer in json format, with the format as follows: {\"strategy\": \"\", \"code\": \"\"}. Please strictly output in a markdown JSON code block.
 Generate the strategy that used to correct and optimized code in the \"strategy\" field."
 Generate the correct and optimized code without explanation, which we can run directly in the \"code\" field."""
 
@@ -78,20 +78,20 @@ Evaluate the following Triton kernel using the criteria above:
 ```python
 {current_program}
 ```
-Provide scores and reasoning for each evaluation criteria in the JSON format as follows:
+Provide scores and reasoning for each evaluation criteria in a markdown JSON code block as follows:
 
-
+{{
     "fusion_intelligence": score,
     "autotuning_coverage": score,
     "memory_access_efficiency": score,
     "algorithmic_complexity": score,
-    "warp_wavefront_utilization: score,
+    "warp_wavefront_utilization": score,
     "software_pipelining": score,
     "numerical_stability": score,
     "correctness_and_portability": score,
     "optimization_scope": score,
     "reasoning": "Your true and logical reasoning for scoring every single above criteria and any actionable suggestions to improve the performance on a given triton kernel. Line breaks are not allowed."
-
+}}
 """
 
 prompt_rocm = """
