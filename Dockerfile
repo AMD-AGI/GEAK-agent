@@ -1,3 +1,6 @@
+# Modifications Copyright(C)[2025] Advanced Micro Devices, Inc. All rights reserved.
+# https://github.com/algorithmicsuperintelligence/openevolve  - Apache License 2.0
+
 # Use an official Python image as the base
 FROM python:3.12-slim
 

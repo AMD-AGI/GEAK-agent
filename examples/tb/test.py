@@ -1,3 +1,6 @@
+# Modifications Copyright(C)[2025] Advanced Micro Devices, Inc. All rights reserved.
+# https://github.com/algorithmicsuperintelligence/openevolve  - Apache License 2.0
+
 import os
 import sys
 sys.path.append("/home/vinajosh/openevolve/examples/tb/initial_programs/softmax")

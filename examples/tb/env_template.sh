@@ -1,4 +1,7 @@
 #!/bin/bash
+# Modifications Copyright(C)[2025] Advanced Micro Devices, Inc. All rights reserved.
+# https://github.com/algorithmicsuperintelligence/openevolve  - Apache License 2.0
+
 # OpenEvolve Environment Configuration Template
 # Source this file or copy these exports to your shell profile
 
