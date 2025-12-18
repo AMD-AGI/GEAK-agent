@@ -1,3 +1,4 @@
 [submodule "OpenHands"]
 	path = OpenHands
-	url = https://github.com/OpenHands/OpenHands.git
+	url = https://github.com/Umangatamd/OpenHands.git
+	branch = amd-kernel-optimization
