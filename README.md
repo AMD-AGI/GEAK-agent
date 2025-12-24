@@ -50,7 +50,7 @@ start_iter: 11
 ## Profiler and Analyzer Features
 
 If you need hardware-level profiling and performance analysis capabilities, please visit the **Profiler Analyzer branch**:
-- **Branch**: [`profiler-analyzer`](https://github.com/AMD-AGI/gpu-kernel-agent/tree/profiler-analyzer) 
+- **Branch**: [`profiler-analyzer`](https://github.com/AMD-AGI/GEAK-agent/tree/profiling) 
 - Includes ROCm profiling tools and analyzer for detailed hardware metrics
 - Provides insights into memory bandwidth, compute unit occupancy, and kernel optimization strategies
 
@@ -103,3 +103,15 @@ If you need hardware-level profiling and performance analysis capabilities, plea
          speedup: float, defined as the latency of golden code compared to that of generated code.
      
          stdout, stderr: Stdout and stderr from the test script execution.
+
+
+
+     For our other agents, please look at the corresponding branches in the same repo
+
+[`GEAK-HIP`](https://github.com/AMD-AGI/GEAK-agent/tree/GEAK-HIP)
+
+[`GEAK-OpenEvolve for Triton `](https://github.com/AMD-AGI/GEAK-agent/tree/geak-openevolve)
+
+[`GEAK-V1 for Triton`](https://github.com/AMD-AGI/GEAK-agent/tree/GEAK-v1)
+
+     
