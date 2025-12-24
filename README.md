@@ -6,7 +6,7 @@ The framework is extendable and flexible. You can easily make you own coding age
 
 We also provide a baseline agent, GEAK-Agent to let you run directly.
 
-## GEAK-Agent
+## GEAK-OptimAgent V2
 <img width="443" alt="image" src="img/geakOAv2.png" />
 
 It contains a Generator, a Reflector, an Evaluator and an Optimizer. The actor generates codes according to the query and context information. The Reflector is responsible for reflecting on the generated code and the error trace if the code failed to run. The Evaluator has a cascade structure. It tests the generated code for the functionality first. If the generated code doesn't pass the functionality test, the error trace will be fedback to the Reflector. Otherwise, the Evaluator will evaluate the performance including latency and efficiency. The Optimizer gets the generated codes, which pass the evaluator's tests, and gives a strategy to optimize the code in terms of latency and efficiency.
