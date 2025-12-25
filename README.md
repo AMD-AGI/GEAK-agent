@@ -36,7 +36,7 @@ NOTE: Check tutorial notebooks in `tutorial/`
 
 ## 🏗️ Architecture
 
-![GEAK-OpenEvolve Architecture](docs/architecture_diagram.png)
+![GEAK-OpenEvolve Architecture](img/geakopenevolve.png)
 
 GEAK-OpenEvolve uses an island-based evolutionary architecture with four main components working in a continuous optimization loop:
 
