@@ -8,7 +8,9 @@ Handles all formatting and results display logic
 import os
 import json
 import glob
-
+import matplotlib.pyplot as plt
+import seaborn as sns
+from matplotlib.ticker import MaxNLocator
 
 def setup_environment():
     """
@@ -207,3 +209,91 @@ def display_strategy(results, kernel_name=None):
         else:
             print('> No strategy recorded.')
 
+def plot_speedup_curve_all_iterations(output_dir, kernel_name=None):
+    """
+    Plot speedup progress by loading ALL iteration result files from output_dir.
+    This ensures we capture valid speedups from every step of the optimization.
+    """
+    sns.set_theme(style="whitegrid")
+    
+    # 1. Find all result files
+    # Pattern is tutorial_results_mem_X.json
+    pattern = os.path.join(output_dir, 'tutorial_results_mem_*.json')
+    result_files = sorted(glob.glob(pattern), key=lambda x: int(os.path.basename(x).split('_')[-1].split('.')[0]))
+    
+    if not result_files:
+        print('⚠️ No result files found in output directory.')
+        return
+
+    # 2. Collect data per kernel across iterations
+    kernel_history = {} # {kernel_name: {iter_num: max_speedup}}
+    
+    for file_path in result_files:
+        try:
+            # Extract iteration number from filename (e.g., ..._mem_0.json -> 0)
+            iter_num = int(os.path.basename(file_path).split('_')[-1].split('.')[0])
+            real_iter = iter_num + 1  # Display as 1-based index
+            
+            with open(file_path, 'r') as f:
+                data = json.load(f)
+            
+            for name, content in data.items():
+                if kernel_name and name != kernel_name:
+                    continue
+                    
+                if name not in kernel_history:
+                    kernel_history[name] = {'iterations': [], 'speedups': []}
+                
+                # Check for valid speedups in this iteration's candidates
+                # 'perf_candidates' usually holds [code, speedup, ...]
+                candidates = content.get('perf_candidates', [])
+                if candidates:
+                    valid_speedups = [c[1] for c in candidates if len(c) > 1 and isinstance(c[1], (int, float)) and c[1] > 0]
+                    if valid_speedups:
+                        best_speedup = max(valid_speedups)
+                        kernel_history[name]['iterations'].append(real_iter)
+                        kernel_history[name]['speedups'].append(best_speedup)
+                        
+        except Exception as e:
+            print(f"Error reading {file_path}: {e}")
+            continue
+
+    # 3. Plot for each kernel found
+    for name, history in kernel_history.items():
+        iterations = history['iterations']
+        speedups = history['speedups']
+        
+        if not speedups:
+            print(f"⚠️ No valid speedup data found for {name}")
+            continue
+            
+        plt.figure(figsize=(10, 6))
+        
+        # Plot line
+        plt.plot(iterations, speedups, marker='o', linestyle='-', linewidth=2, markersize=8, color='#00a4ef')
+        
+        # Styling
+        plt.title(f'Correction & Optimization Progress: {name}', fontsize=14, pad=15)
+        plt.xlabel('Agent Iteration', fontsize=12)
+        plt.ylabel('Speedup (vs Reference)', fontsize=12)
+        plt.grid(True, linestyle='--', alpha=0.7)
+        
+        # Force integer x-axis ticks
+        if len(iterations) > 0:
+            plt.gca().xaxis.set_major_locator(MaxNLocator(integer=True))
+            plt.xlim(min(iterations)-0.5, max(iterations)+0.5)
+        
+        # Annotate values
+        for x, y in zip(iterations, speedups):
+            plt.annotate(
+                f'{y:.2f}x', 
+                (x, y), 
+                textcoords="offset points", 
+                xytext=(0, 10), 
+                ha='center', 
+                fontweight='bold',
+                bbox=dict(boxstyle="round,pad=0.3", fc="white", ec="#00a4ef", alpha=0.8)
+            )
+            
+        plt.tight_layout()
+        plt.show()

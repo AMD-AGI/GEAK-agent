@@ -21,6 +21,7 @@ from .display import (
     display_results_summary,
     display_generated_code,
     display_strategy,
+    plot_speedup_curve_all_iterations,
 )
 
 __all__ = [
@@ -33,5 +34,6 @@ __all__ = [
     'display_results_summary',
     'display_generated_code',
     'display_strategy',
+    'plot_speedup_curve_all_iterations',
 ]
 

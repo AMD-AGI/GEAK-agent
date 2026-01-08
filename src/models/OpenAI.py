@@ -3,7 +3,7 @@
 from typing import List
 import openai
 from tenacity import retry, stop_after_attempt, wait_random_exponential
-
+import os
 from models.Base import BaseModel
 
 
@@ -41,27 +41,28 @@ class StandardOpenAIModel(BaseModel):
 class OpenAIModel(BaseModel):
     def __init__(self, 
                  model_id="GPT4o", 
-                 model_api_version='2024-06-01', 
                  api_key=None):
         assert api_key is not None, "no api key is provided."
         self.model_id = model_id
-        self.model_api_version = model_api_version
 
-        url = 'https://llm-api.amd.com'
-        headers = {
-            'Ocp-Apim-Subscription-Key': api_key 
-        }
-        model_api_version = '2024-06-01'
+        url = "https://llm-api.amd.com/OpenAI"
         
+        try:
+            user = os.getlogin()
+        except Exception:
+            user = os.environ.get("USER", "unknown_user")
 
-        self.client = openai.AzureOpenAI(
-            api_key='dummy',
-            api_version=self.model_api_version,
+        headers = {
+            "Ocp-Apim-Subscription-Key": api_key,
+            "user": user
+        }
+
+        self.client = openai.OpenAI(
             base_url=url,
+            api_key="dummy",
             default_headers=headers
         )
-        self.client.base_url = '{0}/openai/deployments/{1}'.format(url, self.model_id)
-    
+        
     @retry(wait=wait_random_exponential(min=1, max=60), stop=stop_after_attempt(5))
     def generate(self, 
                  messages: List, 

@@ -67,10 +67,10 @@ For each criteria you must provide:
 
 **Evaluation Criteria:**
 1. Fusion Intelligence: Does the kernel smartly fuse compatible operations to reduce memory I/O and kernel launches?
-2. Autotuning Coverage: Does it use `@triton.autotune`? Are the tuning ranges meaningful, diverse, and AMD MI250 GPU hardware-appropriate? (Assign 0.0 if no autotuning config is present.)
+2. Autotuning Coverage: Does it use `@triton.autotune`? Are the tuning ranges meaningful, diverse, and AMD MI325 GPU hardware-appropriate? (Assign 0.0 if no autotuning config is present.)
 3. Memory Access Efficiency: Does it optimize memory layout, coalesced access, and reduce redundant reads/writes?
 4. Algorithmic complexity: Does it fuse multiple for-loops in one smartly? Are there redundant nested for-loops?
-5. Warp/Wavefront Utilization: Does it use thread blocks that fully utilize compute units on the target GPU (e.g., MI250)?
+5. Warp/Wavefront Utilization: Does it use thread blocks that fully utilize compute units on the target GPU (e.g., MI325)?
 6. Software pipelining: Does it explore good enough range for num_stages? Valid range for MI250 GPU is [1,16]. For invalid values assign score of 0.0.
 7. Numerical Stability: Is it numerically safe for large input ranges (e.g., uses max-subtraction in softmax, clamps, etc.)?
 8. Correctness and Portability: Does the kernel handle edge cases (e.g., sizes not divisible by block size)? Is it portable across Triton-supported devices?
