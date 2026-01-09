@@ -243,7 +243,7 @@ def benchmark_grouped_gemm_fp8():
     results = []
 
     print(f"\nRunning Benchmark over {num_split_configs} configs...")
-    print(f"{'Config':<8} {'Std':<10} {'TE(ms)':<10} {'Tri(ms)':<10} {'TE(TF)':<10} {'Tri(TF)':<10} {'Speedup':<10}")
+    print(f"{'Config':<8} {'Std':<10} {'TE(ms)':<10} {'Tri(ms)':<10} {'TE(TF)':<10} {'Tri(TF)':<10} {'Speedup':<10} {'MaxDiff':<10} {'MedianDiff':<12} {'75%Diff':<10} {'95%Diff':<10}")
 
     for config_idx in range(num_split_configs):
         zipf_exponent = 0.5 + (config_idx / num_split_configs) * 1.0
@@ -284,13 +284,25 @@ def benchmark_grouped_gemm_fp8():
         # Convert splits to list for GroupedLinear
         m_splits = input_splits.tolist()
 
-        # Warmup with FP8
+        # Warmup & Accuracy Check
+        te_out = None
+        tri_out = None
         for _ in range(5):
             x = torch.randn((input_dim, hidden_dim), device=device, dtype=params_dtype)
             with te.fp8_autocast(enabled=True, fp8_recipe=fp8_recipe):
-                output = mod(x, m_splits)
-            _ = triton_gemm(x, m_splits)
+                te_out = mod(x, m_splits)
+            tri_out = triton_gemm(x, m_splits)
         torch.cuda.synchronize()
+
+
+        diff = (te_out - tri_out).abs().flatten().float()
+        # Compute max on full tensor, sample for quantiles
+        max_diff = diff.max().item()
+        if diff.numel() > 10000000:
+            diff = diff[::diff.numel() // 10000000]
+        median_diff = diff.median().item()
+        p75_diff = torch.quantile(diff, 0.75).item()
+        p95_diff = torch.quantile(diff, 0.95).item()
 
         num_iters = 20
         
@@ -333,7 +345,7 @@ def benchmark_grouped_gemm_fp8():
         tri_tflops = (total_flops / (tri_time / 1000.0)) / 1e12
         speedup = te_time / tri_time
 
-        print(f"{config_idx:<8} {splits_std:<10.1f} {te_time:<10.3f} {tri_time:<10.3f} {te_tflops:<10.2f} {tri_tflops:<10.2f} {speedup:<10.2f}")
+        print(f"{config_idx:<8} {splits_std:<10.1f} {te_time:<10.3f} {tri_time:<10.3f} {te_tflops:<10.2f} {tri_tflops:<10.2f} {speedup:<10.2f} {max_diff:<10.4f} {median_diff:<12.4f} {p75_diff:<10.4f} {p95_diff:<10.4f}")
         
         results.append({
             'std': splits_std,
