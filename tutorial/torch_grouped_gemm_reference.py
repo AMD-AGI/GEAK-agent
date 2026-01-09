@@ -289,26 +289,45 @@ def benchmark_grouped_gemm_fp8():
             x = torch.randn((input_dim, hidden_dim), device=device, dtype=params_dtype)
             with te.fp8_autocast(enabled=True, fp8_recipe=fp8_recipe):
                 output = mod(x, m_splits)
+            _ = triton_gemm(x, m_splits)
         torch.cuda.synchronize()
 
         num_iters = 20
-        start_event = torch.cuda.Event(enable_timing=True)
-        end_event = torch.cuda.Event(enable_timing=True)
         
-        start_event.record()
+        # TE Benchmark
+        te_times = []
         for _ in range(num_iters):
+            x = torch.randn((input_dim, hidden_dim), device=device, dtype=params_dtype)
+            x = x.contiguous()
+            
+            start_event = torch.cuda.Event(enable_timing=True)
+            end_event = torch.cuda.Event(enable_timing=True)
+            
+            start_event.record()
             with te.fp8_autocast(enabled=True, fp8_recipe=fp8_recipe):
                 _ = mod(x, m_splits)
-        end_event.record()
-        torch.cuda.synchronize()
-        te_time = start_event.elapsed_time(end_event) / num_iters
+            end_event.record()
+            torch.cuda.synchronize()
+            te_times.append(start_event.elapsed_time(end_event))
+            
+        te_time = sum(te_times) / len(te_times)
 
-        start_event.record()
+        # Triton Benchmark
+        tri_times = []
         for _ in range(num_iters):
+            x = torch.randn((input_dim, hidden_dim), device=device, dtype=params_dtype)
+            x = x.contiguous()
+
+            start_event = torch.cuda.Event(enable_timing=True)
+            end_event = torch.cuda.Event(enable_timing=True)
+            
+            start_event.record()
             _ = triton_gemm(x, m_splits)
-        end_event.record()
-        torch.cuda.synchronize()
-        tri_time = start_event.elapsed_time(end_event) / num_iters
+            end_event.record()
+            torch.cuda.synchronize()
+            tri_times.append(start_event.elapsed_time(end_event))
+            
+        tri_time = sum(tri_times) / len(tri_times)
 
         te_tflops = (total_flops / (te_time / 1000.0)) / 1e12
         tri_tflops = (total_flops / (tri_time / 1000.0)) / 1e12
