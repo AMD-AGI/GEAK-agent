@@ -29,11 +29,11 @@ def setup_environment():
         tutorial_dir = cwd
     
     geak_agent_dir = os.path.dirname(tutorial_dir)
-    src_dir = os.path.join(geak_agent_dir, 'src')
+    src_dir = os.path.join(geak_agent_dir, 'geak_agent')
     
     # Add to path if not already there
-    if src_dir not in sys.path:
-        sys.path.insert(0, src_dir)
+    if geak_agent_dir not in sys.path:
+        sys.path.insert(0, geak_agent_dir)
     if tutorial_dir not in sys.path:
         sys.path.insert(0, tutorial_dir)
     

@@ -7,9 +7,9 @@ Uses the self-contained v1 evaluation system with minimal kernel data
 import os
 import json
 import subprocess
-from dataloaders.ProblemState import ProblemState
-from dataloaders.TB_eval.correctness import test_correctness
-from dataloaders.TB_eval.utils import get_temp_file, process_code
+from geak_agent.dataloaders.ProblemState import ProblemState
+from geak_agent.dataloaders.TB_eval.correctness import test_correctness
+from geak_agent.dataloaders.TB_eval.utils import get_temp_file, process_code
 
 # Navigate up from utils/ to tutorial/
 UTILS_DIR = os.path.dirname(os.path.abspath(__file__))

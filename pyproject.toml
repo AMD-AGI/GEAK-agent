@@ -1,0 +1,51 @@
+[build-system]
+requires = ["setuptools>=61.0", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "geak-agent"
+version = "0.1.0"
+description = ""
+authors = [
+    {name = "AMD AGI"}
+]
+requires-python = ">=3.8"
+dependencies = [
+    "triton>=3.1.0",
+    "parse_llm_code",
+    "pandas",
+    "numpy>=1.26",
+    "openai>=1.75.0",
+    "anthropic",
+    "tqdm",
+    "torch",
+    "datasets>=3.6.0",
+    "huggingface-hub",
+    "multiprocess",
+    "protobuf>=5.29.4",
+    "PyYAML",
+    "transformers",
+    "regex",
+    "requests",
+    "rank-bm25",
+    "loguru",
+    "tenacity",
+]
+
+[project.scripts]
+geak-gaagent = "geak_agent.main_gaagent:main"
+geak-gaagent-rocm = "geak_agent.main_gaagent_rocm:main"
+geak-optimagent = "geak_agent.main_optimagent:main"
+geak-reflexion = "geak_agent.main_reflexion_oneshot:main"
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["geak_agent*"]
+
+[tool.setuptools.package-data]
+geak_agent = [
+    "configs/*.yaml",
+    "dataloaders/TB_eval/*.json",
+    "dataloaders/TB_eval/*.py",
+]
+
