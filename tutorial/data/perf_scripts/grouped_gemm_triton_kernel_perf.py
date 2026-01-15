@@ -1,85 +1,110 @@
+# Copyright(C) [2025] Advanced Micro Devices, Inc. All rights reserved.
+
+import sys
+import os
+import importlib.util
+
+# Add current directory to path for generated kernel import
+SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
+sys.path.insert(0, SCRIPT_DIR)
+
+# Import generated kernel (will be copied to same dir as this script)
+from grouped_gemm_triton_kernel import OptimizedGroupedGEMM
+
+# Import reference kernel from kernels directory using importlib to avoid cache
+KERNELS_DIR = os.path.abspath(os.path.join(SCRIPT_DIR, '..', 'kernels'))
+ref_spec = importlib.util.spec_from_file_location(
+    "grouped_gemm_triton_kernel_ref",
+    os.path.join(KERNELS_DIR, "grouped_gemm_triton_kernel.py")
+)
+ref_module = importlib.util.module_from_spec(ref_spec)
+ref_spec.loader.exec_module(ref_module)
+OptimizedGroupedGEMM_ref = ref_module.OptimizedGroupedGEMM
+
+from performance_utils import Performance_Metrics, do_bench_config
 
 import torch
 import triton
-import triton.language as tl
-import time
 
-# Import the optimized kernel wrapper
-# Adjust the import path if necessary based on where this script runs relative to the kernel file
-# For the GEAK tutorial harness, we usually assume the kernel file is available or we import the class dynamically.
-# Here we assume the file 'grouped_gemm_triton_kernel.py' is in the python path or same dir.
-try:
-    from grouped_gemm_triton_kernel import OptimizedGroupedGEMM
-except ImportError:
-    # If running from tutorial/data/perf_scripts/ and kernel is in tutorial/data/kernels/
-    # We might need sys.path hack, but the harness usually handles this.
-    # For now, we assume the harness sets up the path.
-    pass
-
-def benchmark_op():
-    device = 'cuda'
-    
-    # ------------------------------------------------
-    # 1. Setup Data
-    # ------------------------------------------------
-    MIN_M = 128
-    MAX_M = 2048
-    K = 4096
-    N = 4096
-    NUM_GROUPS = 8
-    
-    # Generate random M sizes for the groups
-    torch.manual_seed(0)
-    M_splits = torch.randint(MIN_M, MAX_M, (NUM_GROUPS,)).tolist()
-    total_M = sum(M_splits)
-    
-    # Weights
-    B_list = [torch.randn((K, N), device=device, dtype=torch.bfloat16) for _ in range(NUM_GROUPS)]
-    
-    # Inputs
-    A_concat = torch.randn((total_M, K), device=device, dtype=torch.bfloat16)
-    
-    # ------------------------------------------------
-    # 2. Setup Models
-    # ------------------------------------------------
-    # A) Optimized Triton FP8 Kernel
-    try:
-        opt_model = OptimizedGroupedGEMM(B_list, device=device)
-    except NameError:
-        print("Skipping benchmark: OptimizedGroupedGEMM not found.")
-        return
+class performance_metrics(Performance_Metrics):
+    def __init__(self, dtype=torch.bfloat16, is_backward=False, **kwargs):
+        super().__init__('grouped_gemm_triton_kernel', dtype=dtype, is_backward=is_backward, **kwargs)
+        self.dtype = dtype
         
-    # B) PyTorch Reference (Simulated Sequential Loop)
-    # Just to have a baseline (though standard torch matmul isn't strictly fair comparison to fused grouped gemm)
-    
-    # Warmup
-    for _ in range(10):
-        _ = opt_model(A_concat, M_splits)
+    def get_input_tensors(self):
+        """Generate test inputs with varying group sizes."""
+        self.input_tensors = []
         
-    # ------------------------------------------------
-    # 3. Measure Triton Performance
-    # ------------------------------------------------
-    start_event = torch.cuda.Event(enable_timing=True)
-    end_event = torch.cuda.Event(enable_timing=True)
-    
-    start_event.record()
-    for _ in range(100):
-        _ = opt_model(A_concat, M_splits)
-    end_event.record()
-    torch.cuda.synchronize()
-    
-    elapsed_ms = start_event.elapsed_time(end_event)
-    avg_time_ms = elapsed_ms / 100
-    
-    # ------------------------------------------------
-    # 4. Report FLOPs
-    # ------------------------------------------------
-    # FLOPs = 2 * sum(M * N * K) for each group
-    total_flops = 2 * sum([m * N * K for m in M_splits])
-    tflops = (total_flops / (avg_time_ms * 1e-3)) / 1e12
-    
-    print(f"Average execution time: {avg_time_ms:.3f} ms")
-    print(f"Throughput: {tflops:.2f} TFLOPS")
+        # Different configurations: (NUM_GROUPS, K, N, MIN_M, MAX_M)
+        configs = [
+            (4, 1024, 1024, 128, 512),
+            (8, 2048, 2048, 256, 1024),
+            (4, 4096, 4096, 512, 2048),
+        ]
+        
+        for num_groups, K, N, min_m, max_m in configs:
+            torch.manual_seed(0)
+            M_splits = torch.randint(min_m, max_m, (num_groups,)).tolist()
+            total_M = sum(M_splits)
+            
+            # Create weight matrices for each group
+            B_list = [torch.randn((K, N), dtype=self.dtype) for _ in range(num_groups)]
+            
+            # Create input
+            A_concat = torch.randn((total_M, K), dtype=self.dtype)
+            
+            # Store as tuple: (A_concat, M_splits, B_list)
+            input_tensor = (A_concat, M_splits, B_list)
+            self.input_tensors.append(input_tensor)
 
-if __name__ == "__main__":
-    benchmark_op()
+    def to_cuda(self, input_tensor):
+        """Move tensors to GPU."""
+        A_concat, M_splits, B_list = input_tensor
+        A_cuda = A_concat.cuda()
+        B_cuda = [b.cuda() for b in B_list]
+        return (A_cuda, M_splits, B_cuda)
+
+    def call_op(self, input_tensor):
+        """Call generated kernel."""
+        A_concat, M_splits, B_list = input_tensor
+        model = OptimizedGroupedGEMM(B_list, device='cuda')
+        return model(A_concat, M_splits)
+    
+    def call_op_ref(self, input_tensor):
+        """Call reference kernel."""
+        A_concat, M_splits, B_list = input_tensor
+        model_ref = OptimizedGroupedGEMM_ref(B_list, device='cuda')
+        return model_ref(A_concat, M_splits)
+
+    def get_gbps(self, input_tensor, runtime):
+        """Calculate memory bandwidth."""
+        A_concat, M_splits, B_list = input_tensor
+        K = B_list[0].shape[0]
+        N = B_list[0].shape[1]
+        
+        # Bytes read: A + B, Bytes written: C
+        total_M = sum(M_splits)
+        bytes_A = total_M * K * A_concat.element_size()
+        bytes_B = sum([K * N * b.element_size() for b in B_list])
+        bytes_C = total_M * N * A_concat.element_size()
+        total_bytes = bytes_A + bytes_B + bytes_C
+        
+        GBPS = total_bytes / (runtime / 1000) / 1e9
+        return GBPS
+    
+    def get_tflops(self, input_tensor, runtime):
+        """Calculate TFLOPS."""
+        A_concat, M_splits, B_list = input_tensor
+        K = B_list[0].shape[0]
+        N = B_list[0].shape[1]
+        
+        # FLOPs = 2 * M * N * K for each group
+        total_flops = 2 * sum([m * N * K for m in M_splits])
+        TFLOPS = total_flops / (runtime / 1000) / 1e12
+        return TFLOPS
+
+if __name__ == '__main__':
+    op_perf = performance_metrics()
+    op_perf.get_input_tensors()
+    op_perf.get_do_bench_config(warmup=25, rep=100)
+    op_perf.run_benchmark()
