@@ -84,9 +84,19 @@ class KernelAnalyzer:
     def find_main_function(self) -> Optional[str]:
         """Find the main callable function in the kernel."""
         # Priority order for function names (Python wrappers, not JIT kernels)
+        # Include common kernel naming patterns from customer kernels
         priority = [
+            # Customer kernel patterns (L1 kernels)
+            'poi_fused_add', 'poi_fused_add_simple', 'poi_fused_to_copy', 
+            'poi_fused_to_copy_transpose', 'red_fused_sum', 'tem_fused_mm',
+            'tem_fused_bmm', 'tem_fused_linear',
+            # MoE kernels
+            'fused_moe', 'fused_experts', 'fused_moe_mxfp4',
+            # General patterns
             'triton_op', 'triton_add', 'triton_matmul', 'triton_attention',
-            'torch_op', 'main', 'forward', 'run', 'compute', 'execute'
+            'torch_op', 'main', 'forward', 'run', 'compute', 'execute',
+            # Benchmark entry points
+            'bench_op', 'run_baseline', 'benchmark'
         ]
         
         # Parse AST

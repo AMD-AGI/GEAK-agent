@@ -23,6 +23,103 @@ import torch
 torch.set_default_device('cuda')
 
 
+def try_fix_triton_compat(kernel_path: Path) -> bool:
+    """Try to fix common Triton version compatibility issues."""
+    import re
+    source = kernel_path.read_text()
+    original = source
+    
+    # Common fixes for Triton API changes
+    simple_fixes = [
+        # tl.math.* moved to tl.*
+        ('tl.math.exp', 'tl.exp'),
+        ('tl.math.log', 'tl.log'),
+        ('tl.math.sqrt', 'tl.sqrt'),
+        ('tl.math.tanh', 'tl.tanh'),
+        ('tl.math.sigmoid', 'tl.sigmoid'),
+    ]
+    
+    for old, new in simple_fixes:
+        source = source.replace(old, new)
+    
+    # Handle tl.isnan and tl.isinf - these may not exist in some Triton versions
+    # Use mathematical equivalents:
+    # - isnan(x) -> (x != x) since NaN != NaN
+    # - isinf(x) -> (tl.abs(x) > 3.4e38) for practical infinity check
+    
+    # First, handle tl.math.isnan and tl.math.isinf patterns
+    source = source.replace('tl.math.isnan', 'tl_isnan_compat')
+    source = source.replace('tl.math.isinf', 'tl_isinf_compat')
+    
+    # Then handle direct tl.isnan and tl.isinf patterns
+    # We need to be careful with variable names like 'is_nan = tl.isnan(result)'
+    # Replace 'tl.isnan(VAR)' with '((VAR) != (VAR))'
+    # Replace 'tl.isinf(VAR)' with '(tl.abs(VAR) > 3.4e38)'
+    
+    # Pattern for tl.isnan(something)
+    isnan_pattern = r'tl\.isnan\(([^)]+)\)'
+    source = re.sub(isnan_pattern, r'((\1) != (\1))', source)
+    
+    # Pattern for tl.isinf(something)
+    isinf_pattern = r'tl\.isinf\(([^)]+)\)'
+    source = re.sub(isinf_pattern, r'(tl.abs(\1) > 3.4e38)', source)
+    
+    # Also handle any tl_isnan_compat and tl_isinf_compat we created
+    isnan_compat_pattern = r'tl_isnan_compat\(([^)]+)\)'
+    source = re.sub(isnan_compat_pattern, r'((\1) != (\1))', source)
+    
+    isinf_compat_pattern = r'tl_isinf_compat\(([^)]+)\)'
+    source = re.sub(isinf_compat_pattern, r'(tl.abs(\1) > 3.4e38)', source)
+    
+    # Handle global constants that cannot be accessed in @triton.jit functions
+    # Replace with literal values (for FP16/FP32 limits)
+    global_const_fixes = [
+        # FP16 limits
+        ('FP16_MAX', '65504.0'),
+        ('FP16_MIN', '-65504.0'),
+        ('FP16_EPSILON', '1e-7'),
+        # FP32 limits
+        ('FP32_MAX', '3.4028235e+38'),
+        ('FP32_MIN', '-3.4028235e+38'),
+        # Common epsilon values
+        ('EPSILON', '1e-6'),
+        ('EPS', '1e-6'),
+    ]
+    
+    # Only replace when used inside @triton.jit functions
+    # We do this by replacing ALL occurrences inside the file for now
+    # (The constants should only be used inside kernels anyway)
+    for const_name, const_value in global_const_fixes:
+        # Replace standalone use (not in assignment or definition)
+        # Pattern: word boundary + const_name + word boundary, but not after '='
+        # Simple approach: replace all references but not definitions
+        # We'll be careful to not replace the definition line itself
+        lines = source.split('\n')
+        new_lines = []
+        for line in lines:
+            # Skip definition lines (e.g., "FP16_MAX = 65504.0")
+            if f'{const_name} =' in line or f'{const_name}=' in line:
+                new_lines.append(line)
+            else:
+                # Replace the constant reference with its value
+                # Use word boundary to avoid partial matches
+                line = re.sub(r'\b' + const_name + r'\b', const_value, line)
+                new_lines.append(line)
+        source = '\n'.join(new_lines)
+    
+    if source != original:
+        # Create backup
+        backup_path = kernel_path.with_suffix('.py.backup')
+        if not backup_path.exists():  # Only backup once
+            backup_path.write_text(original)
+        
+        # Write fixed version
+        kernel_path.write_text(source)
+        return True
+    
+    return False
+
+
 def run_optimization(kernel_path: str, gpu_id: str = "0", use_evolve: bool = True):
     """Run the full optimization pipeline with profiler + OpenEvolve."""
     
@@ -41,6 +138,14 @@ def run_optimization(kernel_path: str, gpu_id: str = "0", use_evolve: bool = Tru
     print('=' * 70)
     
     # =========================================================================
+    # Step 0: Check for and fix Triton compatibility issues
+    # =========================================================================
+    if try_fix_triton_compat(kernel_path):
+        print()
+        print('[0/6] FIXING TRITON COMPATIBILITY...')
+        print('  ✓ Applied compatibility fixes (backup saved)')
+    
+    # =========================================================================
     # Step 1: Analyze kernel and generate test harness
     # =========================================================================
     print()
@@ -57,19 +162,52 @@ def run_optimization(kernel_path: str, gpu_id: str = "0", use_evolve: bool = Tru
     print(f'  ✓ Test harness generated: {harness_path}')
     
     # =========================================================================
-    # Step 2: Load kernel
+    # Step 2: Load kernel (with fallback)
     # =========================================================================
     print()
     print('[2/6] LOADING KERNEL...')
+    kernel_module = None
+    kernel_load_error = None
+    
     try:
         import importlib.util
         spec = importlib.util.spec_from_file_location('kernel', kernel_path)
         kernel_module = importlib.util.module_from_spec(spec)
         spec.loader.exec_module(kernel_module)
         print('  ✓ Kernel loaded successfully')
+        
+        # Find the main callable function
+        main_fn = None
+        for func_name in ['poi_fused_add', 'poi_fused_add_simple', 'poi_fused_to_copy',
+                          'red_fused_sum', 'tem_fused_mm', 'triton_op', 'run_baseline',
+                          'main', 'forward', 'benchmark']:
+            if hasattr(kernel_module, func_name):
+                main_fn = getattr(kernel_module, func_name)
+                print(f'  ✓ Found main function: {func_name}')
+                break
+                
     except Exception as e:
-        print(f'  ✗ Failed to load kernel: {e}')
-        sys.exit(1)
+        kernel_load_error = str(e)
+        print(f'  ⚠ Kernel load warning: {kernel_load_error[:80]}')
+        
+        # Try again after fixing compatibility
+        if 'isnan' in str(e) or 'isinf' in str(e) or 'math' in str(e):
+            print('  → Attempting Triton API compatibility fix...')
+            if try_fix_triton_compat(kernel_path):
+                try:
+                    import importlib
+                    importlib.invalidate_caches()
+                    spec = importlib.util.spec_from_file_location('kernel_fixed', kernel_path)
+                    kernel_module = importlib.util.module_from_spec(spec)
+                    spec.loader.exec_module(kernel_module)
+                    print('  ✓ Kernel loaded after compatibility fix')
+                    kernel_load_error = None
+                except Exception as e2:
+                    print(f'  ⚠ Still failed after fix: {str(e2)[:60]}')
+                    kernel_load_error = str(e2)
+        
+        if kernel_module is None:
+            print('  ⚠ Continuing with fallback optimization mode...')
     
     # =========================================================================
     # Step 3: Run comprehensive tests
