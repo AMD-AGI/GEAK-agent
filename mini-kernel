@@ -1,0 +1,160 @@
+#!/bin/bash
+# Mini-Kernel Agent - CLI Wrapper
+# Runs the kernel optimization agent in Docker
+
+set -e
+
+# Configuration
+DOCKER_IMAGE="${MINI_KERNEL_DOCKER_IMAGE:-lmsysorg/sglang:v0.5.6.post1-rocm700-mi35x}"
+SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+
+# Colors
+RED='\033[0;31m'
+GREEN='\033[0;32m'
+YELLOW='\033[1;33m'
+BLUE='\033[0;34m'
+NC='\033[0m'
+
+print_banner() {
+    echo -e "${BLUE}"
+    echo "╔══════════════════════════════════════════════════════════════╗"
+    echo "║           🚀 Mini-Kernel Agent v1.0.0                       ║"
+    echo "║     Autonomous GPU Kernel Optimization                       ║"
+    echo "╚══════════════════════════════════════════════════════════════╝"
+    echo -e "${NC}"
+}
+
+print_help() {
+    print_banner
+    echo "Usage: ./mini-kernel <command> [options]"
+    echo ""
+    echo "Commands:"
+    echo "  optimize <kernel_path>    Optimize a GPU kernel"
+    echo "  test <kernel_path>        Test the example kernel"
+    echo "  help                      Show this help message"
+    echo ""
+    echo "Options for 'optimize':"
+    echo "  --gpu GPU_ID              GPU device to use (default: 0)"
+    echo ""
+    echo "Examples:"
+    echo "  ./mini-kernel optimize examples/add_kernel/kernel.py --gpu 0"
+    echo "  ./mini-kernel test examples/add_kernel/kernel.py"
+    echo ""
+}
+
+check_prereqs() {
+    if ! command -v docker &> /dev/null; then
+        echo -e "${RED}Error: Docker is not installed${NC}"
+        exit 1
+    fi
+}
+
+resolve_path() {
+    local path="$1"
+    if [[ "$path" = /* ]]; then
+        echo "$path"
+    else
+        echo "$(pwd)/$path"
+    fi
+}
+
+run_optimize() {
+    local kernel_path="$1"
+    shift
+    
+    local GPU_ID="0"
+    while [ $# -gt 0 ]; do
+        case "$1" in
+            --gpu) GPU_ID="$2"; shift 2 ;;
+            *) shift ;;
+        esac
+    done
+    
+    local abs_kernel_path=$(resolve_path "$kernel_path")
+    local kernel_dir=$(dirname "$abs_kernel_path")
+    local work_dir="/tmp/mini_kernel_work_$$"
+    mkdir -p "$work_dir"
+    
+    echo -e "${GREEN}Starting optimization...${NC}"
+    echo "  Kernel: $abs_kernel_path"
+    echo "  GPU: $GPU_ID"
+    echo "  Docker: $DOCKER_IMAGE"
+    echo ""
+    
+    docker run --rm \
+        --device=/dev/kfd --device=/dev/dri \
+        --ipc=host --group-add video \
+        -e HIP_VISIBLE_DEVICES=$GPU_ID \
+        -v "$SCRIPT_DIR/mini_kernel":/agent/mini_kernel \
+        -v "$kernel_dir":"$kernel_dir" \
+        -v "$work_dir":/workspace \
+        -w /agent \
+        $DOCKER_IMAGE \
+        python3 -c "
+import sys
+sys.path.insert(0, '/agent')
+from mini_kernel.runner import run_optimization
+run_optimization('$abs_kernel_path', '$GPU_ID')
+"
+    
+    echo ""
+    echo -e "${GREEN}Optimization complete!${NC}"
+    echo "Results saved to: $work_dir/optimization_results.json"
+}
+
+run_test() {
+    local kernel_path="${1:-examples/add_kernel/kernel.py}"
+    local GPU_ID="${2:-0}"
+    
+    local abs_kernel_path=$(resolve_path "$kernel_path")
+    local kernel_dir=$(dirname "$abs_kernel_path")
+    
+    echo -e "${GREEN}Testing kernel: $abs_kernel_path${NC}"
+    
+    docker run --rm \
+        --device=/dev/kfd --device=/dev/dri \
+        --ipc=host --group-add video \
+        -e HIP_VISIBLE_DEVICES=$GPU_ID \
+        -v "$SCRIPT_DIR":/agent \
+        -v "$kernel_dir":"$kernel_dir" \
+        -w /agent \
+        $DOCKER_IMAGE \
+        python3 "$abs_kernel_path"
+}
+
+main() {
+    check_prereqs
+    
+    if [ $# -eq 0 ]; then
+        print_help
+        exit 0
+    fi
+    
+    local command="$1"
+    shift
+    
+    case "$command" in
+        optimize)
+            if [ $# -eq 0 ]; then
+                echo -e "${RED}Error: Missing kernel path${NC}"
+                exit 1
+            fi
+            print_banner
+            run_optimize "$@"
+            ;;
+        test)
+            print_banner
+            run_test "$@"
+            ;;
+        help|--help|-h)
+            print_help
+            ;;
+        *)
+            echo -e "${RED}Unknown command: $command${NC}"
+            print_help
+            exit 1
+            ;;
+    esac
+}
+
+main "$@"

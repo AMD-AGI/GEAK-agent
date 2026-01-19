@@ -1,0 +1,70 @@
+[build-system]
+requires = ["setuptools>=64.0", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools]
+package-dir = {"" = "."}
+
+[tool.setuptools.package-data]
+"*" = ["*.yaml", "*.json", "*.md"]
+
+[project]
+name = "kernel-opt"
+version = "1.0.0"
+description = "Kernel Optimization Framework - Integrates OpenEvolve + mini-swe-agent for GPU kernel optimization"
+readme = "README.md"
+license = {text = "MIT"}
+requires-python = ">=3.10"
+authors = [
+    {name = "AMD AI Team"}
+]
+keywords = ["triton", "gpu", "kernel", "optimization", "amd", "rocm"]
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Intended Audience :: Developers",
+    "Intended Audience :: Science/Research",
+    "License :: OSI Approved :: MIT License",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Topic :: Scientific/Engineering :: Artificial Intelligence",
+]
+
+dependencies = [
+    "typer>=0.9.0",
+    "pyyaml>=6.0",
+    "jinja2>=3.0.0",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=7.0.0",
+    "pytest-asyncio>=0.21.0",
+]
+openevolve = [
+    "openevolve",
+]
+full = [
+    "torch>=2.0.0",
+    "triton>=3.0.0",
+]
+
+[project.scripts]
+kernel-opt = "kernel_opt.cli:main"
+kernel-opt-mcp = "kernel_opt.mcp_server:run_server"
+mini-kernel = "kernel_opt.mini_kernel.cli:main"
+
+[project.urls]
+Homepage = "https://github.com/AMD-AGI/InferenceMAX-triton"
+Documentation = "https://github.com/AMD-AGI/InferenceMAX-triton"
+Repository = "https://github.com/AMD-AGI/InferenceMAX-triton"
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["kernel_opt*"]
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+testpaths = ["tests"]
+
