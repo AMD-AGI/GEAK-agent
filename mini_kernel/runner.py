@@ -29,18 +29,78 @@ def try_fix_triton_compat(kernel_path: Path) -> bool:
     source = kernel_path.read_text()
     original = source
     
-    # Common fixes for Triton API changes
-    simple_fixes = [
-        # tl.math.* moved to tl.*
-        ('tl.math.exp', 'tl.exp'),
-        ('tl.math.log', 'tl.log'),
-        ('tl.math.sqrt', 'tl.sqrt'),
-        ('tl.math.tanh', 'tl.tanh'),
-        ('tl.math.sigmoid', 'tl.sigmoid'),
+    # =========================================================================
+    # Triton API Compatibility Fixes
+    # =========================================================================
+    # Different Triton versions have different module structures:
+    # - Old: tl.math.*, tl.*
+    # - Newer: tl.libdevice.*, tl.extra.cuda.libdevice.*
+    # - Latest: Functions moved back to tl.*
+    #
+    # Strategy: Try to remove unnecessary prefixes and use simplest form
+    # that works in most Triton versions.
+    # =========================================================================
+    
+    # First: Remove problematic tl.math. and tl.libdevice. prefixes
+    # Many functions work directly on tl.* in most versions
+    prefixes_to_remove = [
+        'tl.math.',
+        'tl.libdevice.',
+        'tl.extra.cuda.libdevice.',
     ]
     
-    for old, new in simple_fixes:
-        source = source.replace(old, new)
+    # Functions that typically exist directly in tl namespace
+    direct_tl_funcs = [
+        'exp', 'log', 'sqrt', 'abs', 'maximum', 'minimum', 
+        'where', 'zeros', 'zeros_like', 'full', 'arange',
+        'load', 'store', 'atomic_add', 'atomic_max', 'atomic_min',
+        'dot', 'sum', 'max', 'min', 'argmax', 'argmin',
+        'cast', 'broadcast_to', 'reshape', 'view', 'expand_dims',
+        'sigmoid',  # sigmoid is often in tl directly
+    ]
+    
+    # Functions that need special handling (may not exist or need workarounds)
+    special_funcs = {
+        'tanh': '((2.0 / (1.0 + tl.exp(-2.0 * ({arg}))) - 1.0))',  # tanh(x) = 2*sigmoid(2x) - 1
+        'rsqrt': '(1.0 / tl.sqrt({arg}))',  # rsqrt(x) = 1/sqrt(x)
+        'cos': None,  # Keep as-is, try to use if available
+        'sin': None,  # Keep as-is, try to use if available
+        'floor': None,  # Keep as-is
+        'ceil': None,  # Keep as-is
+    }
+    
+    # Step 1: Try to simplify prefixed calls to direct tl.* calls
+    for prefix in prefixes_to_remove:
+        for func in direct_tl_funcs:
+            old_pattern = f'{prefix}{func}'
+            new_pattern = f'tl.{func}'
+            source = source.replace(old_pattern, new_pattern)
+    
+    # Step 2: Handle functions that may not exist - use workarounds
+    # Handle tl.tanh (various forms)
+    for prefix in ['tl.math.', 'tl.libdevice.', 'tl.']:
+        # Match pattern like tl.tanh(something) and replace with workaround
+        tanh_pattern = re.escape(prefix) + r'tanh\(([^)]+)\)'
+        def tanh_replacement(m):
+            arg = m.group(1)
+            # tanh(x) = (exp(2x) - 1) / (exp(2x) + 1)
+            # Or simpler: tanh(x) = 2*sigmoid(2x) - 1
+            return f'((2.0 / (1.0 + tl.exp(-2.0 * ({arg}))) - 1.0))'
+        source = re.sub(tanh_pattern, tanh_replacement, source)
+    
+    # Handle tl.rsqrt (various forms)
+    for prefix in ['tl.math.', 'tl.libdevice.', 'tl.']:
+        rsqrt_pattern = re.escape(prefix) + r'rsqrt\(([^)]+)\)'
+        def rsqrt_replacement(m):
+            arg = m.group(1)
+            return f'(1.0 / tl.sqrt({arg}))'
+        source = re.sub(rsqrt_pattern, rsqrt_replacement, source)
+    
+    # Step 3: For remaining prefixed functions, try to just use tl.* form
+    for prefix in prefixes_to_remove:
+        # Replace remaining tl.math.X or tl.libdevice.X with tl.X
+        pattern = re.escape(prefix) + r'(\w+)'
+        source = re.sub(pattern, r'tl.\1', source)
     
     # Handle tl.isnan and tl.isinf - these may not exist in some Triton versions
     # Use mathematical equivalents:
@@ -142,7 +202,7 @@ def run_optimization(kernel_path: str, gpu_id: str = "0", use_evolve: bool = Tru
     # =========================================================================
     if try_fix_triton_compat(kernel_path):
         print()
-        print('[0/6] FIXING TRITON COMPATIBILITY...')
+        print('[0/7] FIXING TRITON COMPATIBILITY...')
         print('  ✓ Applied compatibility fixes (backup saved)')
     
     # =========================================================================
@@ -267,75 +327,173 @@ def run_optimization(kernel_path: str, gpu_id: str = "0", use_evolve: bool = Tru
         print('  ⚠ No run_baseline function found')
     
     # =========================================================================
-    # Step 5: PROFILE FOR BOTTLENECKS
+    # Step 5: PROFILE FOR BOTTLENECKS (using rocprof-compute)
     # =========================================================================
     print()
-    print('[5/6] PROFILING FOR BOTTLENECKS...')
+    print('[5/7] PROFILING FOR BOTTLENECKS (rocprof-compute)...')
     
     bottleneck = "balanced"
     profile_metrics = {}
+    profile_result = None
+    recommendations = []
     
+    # Try rocprof-compute first (preferred)
     try:
-        # Single kernel timing
-        start = torch.cuda.Event(enable_timing=True)
-        end = torch.cuda.Event(enable_timing=True)
+        from .profiler import RocprofComputeProfiler, BottleneckType
         
-        torch.cuda.synchronize()
-        start.record()
-        run_fn()
-        end.record()
-        torch.cuda.synchronize()
-        single_us = start.elapsed_time(end) * 1000
+        profiler = RocprofComputeProfiler(verbose=True)
         
-        # Batched timing
-        start.record()
-        for _ in range(100):
+        # Create benchmark script for profiler
+        benchmark_script = kernel_path.parent / "benchmark_for_profile.py"
+        benchmark_content = f'''#!/usr/bin/env python3
+"""Auto-generated benchmark script for rocprof-compute profiling."""
+import sys
+sys.path.insert(0, "{kernel_path.parent}")
+import torch
+torch.set_default_device("cuda")
+
+# Import kernel
+from {kernel_path.stem} import *
+
+# Try to find run function
+run_fn = None
+for name in ['run_baseline', 'triton_op', 'main', 'kernel', 'run', 'forward']:
+    if name in dir():
+        run_fn = eval(name)
+        break
+
+if run_fn is None:
+    # Try benchmark module
+    try:
+        from benchmark import bench_op
+        for _ in range(5):
+            bench_op(4, 1024)
+        torch.cuda.synchronize()
+        print("Benchmark complete")
+    except Exception as e:
+        print(f"No run function found: {{e}}")
+else:
+    # Warmup
+    for _ in range(10):
+        try:
             run_fn()
-        end.record()
-        torch.cuda.synchronize()
-        batch_us = start.elapsed_time(end) * 1000 / 100
+        except:
+            pass
+    torch.cuda.synchronize()
+    
+    # Profile runs
+    for _ in range(20):
+        run_fn()
+    torch.cuda.synchronize()
+    print("Profile complete")
+'''
+        benchmark_script.write_text(benchmark_content)
         
-        # Calculate launch overhead
-        launch_overhead = max(0, single_us - batch_us)
-        launch_ratio = launch_overhead / single_us if single_us > 0 else 0
+        # Run rocprof-compute profiler
+        profile_result = profiler.profile(
+            benchmark_script,
+            kernel_path.parent / "profile_output",
+            kernel_name=kernel_path.stem
+        )
         
-        profile_metrics = {
-            "single_kernel_us": single_us,
-            "batched_kernel_us": batch_us,
-            "launch_overhead_us": launch_overhead,
-            "launch_overhead_ratio": launch_ratio,
-        }
+        bottleneck = profile_result.bottleneck.value
+        profile_metrics = profile_result.metrics
+        recommendations = profile_result.recommendations
         
-        # Classify bottleneck
-        if launch_ratio > 0.3:
-            bottleneck = "latency"
-            print(f'  Bottleneck: LATENCY ({launch_ratio*100:.1f}% launch overhead)')
+    except ImportError:
+        print('  ⚠ rocprof-compute profiler not available, using fallback...')
+    except Exception as e:
+        print(f'  ⚠ rocprof-compute failed: {e}')
+        print('  → Falling back to Python timing-based profiler...')
+    
+    # Fallback to simple timing if rocprof-compute failed
+    if not profile_metrics and run_fn:
+        try:
+            start = torch.cuda.Event(enable_timing=True)
+            end = torch.cuda.Event(enable_timing=True)
+            
+            # Single kernel timing
+            torch.cuda.synchronize()
+            start.record()
+            run_fn()
+            end.record()
+            torch.cuda.synchronize()
+            single_us = start.elapsed_time(end) * 1000
+            
+            # Batched timing
+            start.record()
+            for _ in range(100):
+                run_fn()
+            end.record()
+            torch.cuda.synchronize()
+            batch_us = start.elapsed_time(end) * 1000 / 100
+            
+            # Calculate launch overhead
+            launch_overhead = max(0, single_us - batch_us)
+            launch_ratio = launch_overhead / single_us if single_us > 0 else 0
+            
+            profile_metrics = {
+                "single_kernel_us": single_us,
+                "batched_kernel_us": batch_us,
+                "launch_overhead_us": launch_overhead,
+                "launch_overhead_ratio": launch_ratio,
+            }
+            
+            # Classify bottleneck
+            if launch_ratio > 0.3:
+                bottleneck = "latency"
+                recommendations = [
+                    "Use HIP Graph capture to eliminate launch overhead",
+                    "Batch multiple kernel calls",
+                    "Consider kernel fusion",
+                ]
+            elif batch_us > 50:
+                bottleneck = "compute"
+                recommendations = [
+                    "Tune block sizes",
+                    "Increase parallelism",
+                    "Check occupancy",
+                ]
+            elif batch_us < 10:
+                bottleneck = "memory"
+                recommendations = [
+                    "Coalesce memory accesses",
+                    "Use vectorized loads",
+                    "Cache in LDS",
+                ]
+            else:
+                bottleneck = "balanced"
+                recommendations = [
+                    "Try HIP Graph",
+                    "Parameter tuning",
+                    "Kernel fusion",
+                ]
+            
+            print(f'  Bottleneck: {bottleneck.upper()}')
             print(f'    → Single kernel: {single_us:.2f} μs')
             print(f'    → Batched: {batch_us:.2f} μs')
-            print(f'    → Recommendation: Use HIP Graph, kernel fusion')
-        elif batch_us > 50:
-            bottleneck = "compute"
-            print(f'  Bottleneck: COMPUTE (heavy kernel)')
-            print(f'    → Recommendation: Tune block sizes, increase parallelism')
-        elif batch_us < 10:
-            bottleneck = "memory"
-            print(f'  Bottleneck: MEMORY (fast but memory-bound)')
-            print(f'    → Recommendation: Coalesce accesses, vectorize loads')
-        else:
-            bottleneck = "balanced"
-            print(f'  Bottleneck: BALANCED')
-            print(f'    → Recommendation: Try HIP Graph, parameter tuning')
+            print(f'    → Launch overhead: {launch_ratio*100:.1f}%')
             
-    except Exception as e:
-        print(f'  ⚠ Profiling failed: {e}')
-        bottleneck = "balanced"
+        except Exception as e:
+            print(f'  ⚠ Fallback profiling failed: {e}')
+            bottleneck = "balanced"
+            recommendations = ["Try general optimizations"]
+    
+    # Print recommendations
+    if recommendations:
+        print()
+        print('  Recommendations:')
+        for i, rec in enumerate(recommendations[:5], 1):
+            print(f'    {i}. {rec}')
     
     # =========================================================================
-    # Step 6: APPLY OPTIMIZATIONS (OpenEvolve-guided)
+    # Step 6: APPLY OPTIMIZATIONS (OpenEvolve-guided based on profiler)
     # =========================================================================
     print()
-    print('[6/6] APPLYING PROFILER-GUIDED OPTIMIZATIONS...')
-    print(f'      (Targeting {bottleneck} bottleneck)')
+    print('[6/7] APPLYING PROFILER-GUIDED OPTIMIZATIONS...')
+    print(f'      Targeting: {bottleneck.upper()} bottleneck')
+    if recommendations:
+        print(f'      Strategy:  {recommendations[0]}')
     
     best_time = baseline_us if baseline_us > 0 else float('inf')
     best_opt = 'baseline'
@@ -512,11 +670,13 @@ def run_optimization(kernel_path: str, gpu_id: str = "0", use_evolve: bool = Tru
         print(f'        ✗ Combined failed: {str(e)[:60]}')
     
     # =========================================================================
-    # Final Results
+    # Step 7: GENERATE REPORT
     # =========================================================================
     print()
+    print('[7/7] GENERATING OPTIMIZATION REPORT...')
+    print()
     print('=' * 70)
-    print('  OPTIMIZATION COMPLETE')
+    print('  MINI-KERNEL OPTIMIZATION COMPLETE')
     print('=' * 70)
     print()
     print('  Test Results:')

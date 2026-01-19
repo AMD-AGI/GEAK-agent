@@ -528,10 +528,24 @@ class TestHarness:
 # REQUIRED FUNCTIONS FOR AGENT
 # =============================================================================
 
+# Default sizes per kernel type (sensible defaults that fit in GPU memory)
+DEFAULT_SIZES = {{
+    "elementwise": 1024 * 1024,  # 1M elements
+    "matmul": 1024,              # 1024x1024 matrices
+    "attention": 512,            # seq_len=512
+    "convolution": 1024 * 1024,  # 1M elements
+    "softmax": 1024 * 1024,      # 1M elements
+    "normalization": 1024 * 1024,# 1M elements
+    "sorting": 1024 * 1024,      # 1M elements
+}}
+
+KERNEL_TYPE = "{self.kernel_type}"
+
 def run_baseline():
     """Run the kernel with default inputs."""
     harness = TestHarness()
-    inputs = harness.generate_inputs(1024 * 1024, "torch.float32")
+    size = DEFAULT_SIZES.get(KERNEL_TYPE, 1024 * 1024)
+    inputs = harness.generate_inputs(size, "torch.float32")
     result = harness.run_kernel(inputs)
     torch.cuda.synchronize()
     return result
