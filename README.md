@@ -1,235 +1,144 @@
 # 🚀 Mini-Kernel Agent
 
-**Autonomous GPU Kernel Optimization using Profiler-Guided Evolutionary Search**
+**Autonomous GPU Kernel Optimization using LLM + Profiler-Guided Evolutionary Search**
 
-Mini-Kernel Agent automatically optimizes GPU kernels (Triton, CUDA, HIP) by:
-1. **Profiling** - Identifying bottlenecks (latency, memory, compute)
-2. **Evolving** - Using OpenEvolve to explore optimization strategies
-3. **Generating** - Creating actual kernel code variants (not just wrappers!)
-4. **Benchmarking** - Measuring correctness and performance
-5. **Reporting** - Producing detailed optimization reports
+Mini-Kernel Agent automatically optimizes GPU kernels (Triton, HIP, CUDA) by:
+1. **Detecting** - Auto-discovers kernels in files/folders
+2. **Profiling** - Uses `rocprof-compute` for hardware bottleneck analysis
+3. **Analyzing** - LLM (Claude) interprets profiler output
+4. **Evolving** - OpenEvolve generates, mutates, and crossovers optimization strategies
+5. **Evaluating** - Measures speedup for each candidate
+6. **Reporting** - Returns best optimization with full history
 
 ## 🎯 Key Features
 
-- **Autonomous Operation** - Minimal user intervention required
-- **Profiler-Guided** - Optimizations based on actual hardware bottlenecks
-- **Evolutionary Search** - OpenEvolve explores, exploits, merges strategies
-- **Kernel Code Generation** - Generates actual Triton/HIP kernel variants
-- **Parameter Tuning** - Automatically tunes block sizes, warps, splits, etc.
-- **Correctness Verification** - Ensures optimized kernels produce correct results
+- **Fully Autonomous** - Just point it at a kernel file or folder
+- **LLM-Powered** - Claude analyzes bottlenecks and generates optimizations
+- **Evolutionary Search** - OpenEvolve explores, mutates, crossovers strategies
+- **Real-time Logging** - See every step: profiling, LLM calls, evaluations
+- **Generic** - Works with single files, modules, or folders with multiple kernels
 
 ## 📦 Quick Start
 
 ### Prerequisites
 
-- Docker with GPU support (ROCm or CUDA)
+- Docker with GPU support (ROCm)
 - Python 3.10+
+- **API Key** for AMD LLM Gateway (Claude)
 
 ### Installation
 
 ```bash
 # Clone the repository
-git clone <repo-url> mini-kernel-agent
+git clone git@github.com:AMD-AGI/GEAK-agent.git mini-kernel-agent
 cd mini-kernel-agent
+git checkout opti
 
-# Run setup (uses Docker - no local dependencies needed!)
-./setup.sh
+# Install Python dependencies
+pip install openai tenacity
 ```
 
-### Basic Usage
+### ⚠️ Set Your API Key (REQUIRED)
 
 ```bash
-# Optimize a kernel (runs in Docker automatically)
-./mini-kernel optimize /path/to/your/kernel.py
+# Set your AMD LLM Gateway API key
+export MINI_KERNEL_API_KEY="your-api-key-here"
 
-# With specific GPU
-./mini-kernel optimize /path/to/kernel.py --gpu 0
-
-# Extended evolution (more generations)
-./mini-kernel optimize /path/to/kernel.py --generations 10 --population 16
+# Verify it's set
+echo $MINI_KERNEL_API_KEY
 ```
 
-### Example: Optimize the Add Kernel
+The agent uses Claude (via AMD LLM Gateway) for intelligent optimization.
+**You must set this environment variable before running.**
+
+### Run the Agent
 
 ```bash
-# Run the included example
-./mini-kernel optimize examples/add_kernel/kernel.py --gpu 0
+# Single kernel file
+python run_agent.py examples/add_kernel/kernel.py
 
-# Or run interactively in Docker
-docker run --rm -it \
-  --device=/dev/kfd --device=/dev/dri \
-  -v $(pwd):/workspace \
-  -w /workspace \
-  lmsysorg/sglang:v0.5.6.post1-rocm700-mi35x \
-  python -m mini_kernel.cli examples/add_kernel/kernel.py
+# Module folder
+python run_agent.py /path/to/your/module/
+
+# With options
+python run_agent.py kernel.py --generations 5 --population 5 --target 2.0
 ```
 
-## 🔧 How It Works
+## 🔧 How It Works - 5-Step Pipeline
 
-### 1. Profiler Analysis
 ```
-[PROFILER] Analyzing kernel bottlenecks...
-[PROFILER] Bottleneck: latency (93% launch overhead)
-  → Recommended: HIP Graph, Kernel Fusion, Persistent Kernels
+[1/5] DETECTING KERNELS
+      Scanning path, finding Triton/HIP/CUDA kernels
+
+[2/5] PROFILING WITH ROCPROF-COMPUTE
+      Hardware-level bottleneck analysis (latency, memory, compute)
+
+[3/5] MEASURING BASELINE PERFORMANCE
+      Benchmarking original kernel latency
+
+[4/5] LLM ANALYSIS + OPENEVOLVE OPTIMIZATION
+      ├── LLM analyzes profiler output → identifies bottleneck
+      ├── Generates initial population of optimization strategies
+      ├── Evaluates each candidate (runs in Docker)
+      ├── Evolution loop:
+      │   ├── MUTATION: LLM modifies parameters/algorithm
+      │   ├── CROSSOVER: LLM combines two good strategies
+      │   └── NEW: LLM generates fresh approaches
+      └── Returns best solution
+
+[5/5] FINAL REPORT
+      Best speedup, strategy name, saved code
 ```
 
-### 2. OpenEvolve Brain
-```
-[OpenEvolve] Population: 12 genomes
-[OpenEvolve] Generation 1/5
-  ⭐ NEW BEST: params_n64_h4_s16_w4
-     Latency: 15.2 μs → 12.8 μs
-     Speedup: 1.19x
+## ⚙️ Command Line Options
+
+```bash
+python run_agent.py <path> [options]
+
+Arguments:
+  path                    Path to kernel file or module directory
+
+Options:
+  --generations, -g N     Number of evolution generations (default: 3)
+  --population, -p N      Population size per generation (default: 3)
+  --target, -t SPEEDUP    Target speedup, e.g., 1.5 for 50% faster (default: 1.5)
+  --quiet, -q             Reduce output verbosity
 ```
 
-### 3. Code Generation
-The agent generates actual kernel variants:
-- **Parameter variants** - Different block sizes, warps, splits
-- **Fused variants** - Combine multiple kernels
-- **Algorithmic variants** - Different tiling, memory patterns
+## 🧬 OpenEvolve Brain
 
-### 4. Results
-```
-============================================================
-  OPTIMIZATION COMPLETE
-============================================================
-  Baseline:   17.11 μs
-  Best:       14.32 μs
-  Speedup:    1.19x
-  Strategy:   fused_kernel + params_n128_h8_s8_w4
-============================================================
-```
+The evolutionary optimization uses LLM as an intelligent mutation/crossover operator:
+
+| Operation | Description |
+|-----------|-------------|
+| **Generate** | LLM creates new optimization based on bottleneck |
+| **Mutate** | LLM modifies parameters or algorithm of existing solution |
+| **Crossover** | LLM combines best aspects of two parent solutions |
+| **Select** | Tournament selection favors higher fitness |
+| **Elite** | Best solutions always survive to next generation |
+
+## 🔬 Environment Variables
+
+| Variable | Required | Description |
+|----------|----------|-------------|
+| `MINI_KERNEL_API_KEY` | ✅ Yes | API key for AMD LLM Gateway |
+| `MINI_KERNEL_API_URL` | No | Custom API endpoint |
+| `MINI_KERNEL_DOCKER` | No | Docker image (default: lmsysorg/sglang:v0.5.6.post1-rocm700-mi35x) |
 
 ## 📁 Project Structure
 
 ```
 mini-kernel-agent/
-├── mini_kernel/           # Core package
-│   ├── __init__.py
-│   ├── cli.py             # Command-line interface
-│   ├── profiler.py        # Bottleneck analysis
-│   ├── openevolve_brain.py # Evolutionary optimization
-│   ├── kernel_codegen.py  # Kernel code generation
-│   └── harness.py         # Test harness generation
-├── examples/              # Example kernels
-│   ├── add_kernel/        # Simple vector add
-│   ├── matmul_kernel/     # Matrix multiplication
-│   └── attention_kernel/  # Flash attention
-├── configs/               # Configuration presets
-│   ├── default.yaml
-│   ├── aggressive.yaml    # More exploration
-│   └── quick.yaml         # Fast optimization
-├── docs/                  # Documentation
-├── setup.sh               # Setup script
-├── mini-kernel            # CLI wrapper
+├── run_agent.py           # 🚀 MAIN ENTRY POINT
+├── mini_kernel/
+│   ├── llm_brain.py       # LLM integration (Claude API)
+│   ├── profiler.py        # rocprof-compute integration
+│   └── ...
+├── examples/
+│   └── add_kernel/        # Example Triton kernel
 └── README.md
 ```
 
-## ⚙️ Configuration
-
-### Command Line Options
-
-```bash
-./mini-kernel optimize <kernel_path> [options]
-
-Options:
-  --gpu GPU_ID          GPU device to use (default: 0)
-  --generations N       Number of evolution generations (default: 5)
-  --population N        Population size (default: 12)
-  --timeout SECONDS     Maximum optimization time (default: 1800)
-  --output DIR          Output directory for results
-  --config FILE         Configuration preset file
-```
-
-### Configuration File (YAML)
-
-```yaml
-# configs/default.yaml
-evolution:
-  population_size: 12
-  generations: 5
-  mutation_rate: 0.3
-  crossover_rate: 0.7
-  elite_count: 2
-
-kernel:
-  generate_variants: true
-  variant_types:
-    - params
-    - fused
-    - persistent_v2
-  
-  parameter_ranges:
-    block_n: [32, 64, 128, 256]
-    block_h: [1, 2, 4, 8, 16]
-    num_splits: [4, 8, 16, 32]
-    num_warps: [2, 4, 8]
-
-profiler:
-  warmup_iters: 100
-  benchmark_iters: 1000
-
-docker:
-  image: lmsysorg/sglang:v0.5.6.post1-rocm700-mi35x
-```
-
-## 🧬 OpenEvolve Brain
-
-The evolutionary optimization uses:
-
-1. **Population Initialization**
-   - Single optimizations (HIP Graph, Fusion, etc.)
-   - Known good combinations
-   - Random exploration
-
-2. **Fitness Evaluation**
-   - Correctness check (must pass!)
-   - Latency measurement
-   - Speedup calculation
-
-3. **Selection** (Tournament)
-   - Favor solutions that work and are fast
-
-4. **Crossover** (Strategy Merging)
-   - Combine successful optimization strategies
-   - Merge kernel parameters from parents
-
-5. **Mutation** (Exploration)
-   - Flip optimizations on/off
-   - Mutate kernel parameters (block sizes, etc.)
-
-## 📊 Supported Kernel Types
-
-| Type | Auto-Detection | Code Generation |
-|------|---------------|-----------------|
-| Triton | ✅ | ✅ Full variants |
-| CUDA/HIP | ✅ | ⚠️ Parameter only |
-| PyTorch | ✅ | ✅ Wrapper opts |
-| CK (Composable Kernel) | ✅ | ⚠️ Planned |
-
-## 🔬 Profiler Bottleneck Types
-
-| Bottleneck | Symptoms | Recommended Optimizations |
-|------------|----------|--------------------------|
-| **Latency** | High launch overhead | HIP Graph, Fusion, Persistent |
-| **Memory** | Low bandwidth util | Coalescing, Vectorization, LDS |
-| **Compute** | Low ALU util | Better tiling, Warp efficiency |
-| **Balanced** | Mixed | General tuning |
-
-## 🤝 Contributing
-
-1. Fork the repository
-2. Create a feature branch
-3. Add your kernel type or optimization strategy
-4. Submit a pull request
-
 ## 📄 License
 
-MIT License - see LICENSE file
-
-## 🙏 Acknowledgments
-
-- OpenEvolve for evolutionary optimization concepts
-- AMD ROCm team for profiler tools
-- Triton for the kernel DSL
-
+MIT License

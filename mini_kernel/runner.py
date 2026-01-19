@@ -209,7 +209,7 @@ def run_optimization(kernel_path: str, gpu_id: str = "0", use_evolve: bool = Tru
     # Step 1: Analyze kernel and generate test harness
     # =========================================================================
     print()
-    print('[1/6] ANALYZING KERNEL & GENERATING TEST HARNESS...')
+    print('[1/7] ANALYZING KERNEL & GENERATING TEST HARNESS...')
     generator = TestHarnessGenerator(kernel_path)
     print(f'  Kernel type: {generator.kernel_type}')
     print(f'  Main function: {generator.main_func}')
@@ -225,7 +225,7 @@ def run_optimization(kernel_path: str, gpu_id: str = "0", use_evolve: bool = Tru
     # Step 2: Load kernel (with fallback)
     # =========================================================================
     print()
-    print('[2/6] LOADING KERNEL...')
+    print('[2/7] LOADING KERNEL...')
     kernel_module = None
     kernel_load_error = None
     
@@ -273,7 +273,7 @@ def run_optimization(kernel_path: str, gpu_id: str = "0", use_evolve: bool = Tru
     # Step 3: Run comprehensive tests
     # =========================================================================
     print()
-    print('[3/6] RUNNING COMPREHENSIVE TEST HARNESS...')
+    print('[3/7] RUNNING COMPREHENSIVE TEST HARNESS...')
     print('      (LOW / MEDIUM / HIGH coverage)')
     
     # Execute the generated harness
@@ -292,7 +292,7 @@ def run_optimization(kernel_path: str, gpu_id: str = "0", use_evolve: bool = Tru
     # Step 4: Benchmark baseline
     # =========================================================================
     print()
-    print('[4/6] BENCHMARKING BASELINE...')
+    print('[4/7] BENCHMARKING BASELINE...')
     
     baseline_us = 0
     run_fn = None
