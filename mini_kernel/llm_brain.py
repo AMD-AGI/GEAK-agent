@@ -921,8 +921,12 @@ class OpenEvolveBrain:
         self._log(f"")
         self._log(f"  Performance:")
         self._log(f"    Baseline:    {baseline_us:.2f} μs")
-        self._log(f"    Optimized:   {baseline_us/best.fitness:.2f} μs")
-        self._log(f"    Improvement: {(best.fitness-1)*100:.1f}%")
+        if best.fitness > 0:
+            self._log(f"    Optimized:   {baseline_us/best.fitness:.2f} μs")
+            self._log(f"    Improvement: {(best.fitness-1)*100:.1f}%")
+        else:
+            self._log(f"    Optimized:   N/A (evaluation failed)")
+            self._log(f"    Improvement: 0% (try different strategies)")
         self._log("")
         
         if best.parent_strategies:

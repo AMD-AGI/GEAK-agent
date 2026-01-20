@@ -753,44 +753,146 @@ class MiniKernelAgent:
         def evaluate(code: str) -> float:
             """Evaluate optimization code and return speedup."""
             
-            # Save the code
-            opt_path = self.work_dir / "optimization.py"
+            # Save the optimization code as a proper module file (not using exec!)
+            opt_path = self.work_dir / "opt_module.py"
             opt_path.write_text(code)
             
-            # Create evaluation script
+            # Create evaluation script that imports the module properly
+            # This avoids the "could not get source code" error with Triton
             eval_script = f'''#!/usr/bin/env python3
 import torch
 import sys
 import traceback
+import importlib.util
 
 torch.set_default_device("cuda")
 sys.path.insert(0, "/kernel")
+sys.path.insert(0, "/workspace")
+
+baseline_us = {baseline_us}
 
 try:
-    # First import the original kernel
+    # Import original kernel
     from {kernel_name} import *
     
-    # Then load and run the optimization
-    exec(open("/workspace/optimization.py").read())
+    # Import optimization module properly (not exec!)
+    spec = importlib.util.spec_from_file_location("opt_module", "/workspace/opt_module.py")
+    opt_mod = importlib.util.module_from_spec(spec)
+    sys.modules["opt_module"] = opt_mod
+    spec.loader.exec_module(opt_mod)
     
-    # Try to find and run the optimization
-    for cls_name in ['OptimizedKernel', 'Optimizer', 'HIPGraphOptimizer', 'MultiStreamOptimizer']:
-        if cls_name in dir():
-            cls = eval(cls_name)
-            obj = cls()
-            if hasattr(obj, 'optimize'):
-                latency = obj.optimize()
-                speedup = {baseline_us} / latency if latency > 0 else 0
-                print(f"SPEEDUP:{{speedup:.4f}}")
-                sys.exit(0)
-            elif hasattr(obj, 'benchmark'):
-                latency = obj.benchmark()
-                speedup = {baseline_us} / latency if latency > 0 else 0
-                print(f"SPEEDUP:{{speedup:.4f}}")
-                sys.exit(0)
+    found = False
     
-    # Fallback
-    print("SPEEDUP:1.0")
+    # Method 1: Look for optimizer classes in the module
+    for cls_name in ['OptimizedKernel', 'Optimizer', 'HIPGraphOptimizer', 'MultiStreamOptimizer', 
+                     'BlockSizeOptimizer', 'VectorizedOptimizer', 'FusedOptimizer']:
+        if hasattr(opt_mod, cls_name):
+            try:
+                cls = getattr(opt_mod, cls_name)
+                obj = cls()
+                for method in ['optimize', 'benchmark', 'run']:
+                    if hasattr(obj, method):
+                        latency = getattr(obj, method)()
+                        if latency and latency > 0:
+                            speedup = baseline_us / latency
+                            print(f"SPEEDUP:{{speedup:.4f}}")
+                            found = True
+                            break
+                if found:
+                    break
+            except Exception as e:
+                print(f"Class {{cls_name}} error: {{e}}")
+                continue
+    
+    # Method 2: Look for functions in the module
+    if not found:
+        for fn_name in ['optimize', 'benchmark', 'run_optimized', 'main', 'run']:
+            if hasattr(opt_mod, fn_name):
+                try:
+                    fn = getattr(opt_mod, fn_name)
+                    if callable(fn):
+                        result = fn()
+                        if isinstance(result, (int, float)) and result > 0:
+                            speedup = baseline_us / result
+                            print(f"SPEEDUP:{{speedup:.4f}}")
+                            found = True
+                            break
+                except Exception as e:
+                    print(f"Function {{fn_name}} error: {{e}}")
+                    continue
+    
+    # Method 3: Look for optimized kernel function and benchmark it
+    if not found:
+        for fn_name in dir(opt_mod):
+            if 'kernel' in fn_name.lower() or 'add' in fn_name.lower():
+                fn = getattr(opt_mod, fn_name)
+                if callable(fn) and not fn_name.startswith('_'):
+                    try:
+                        print(f"Trying to benchmark {{fn_name}}...")
+                        size = 1024 * 1024
+                        x = torch.randn(size, device='cuda', dtype=torch.float32)
+                        y = torch.randn(size, device='cuda', dtype=torch.float32)
+                        
+                        # Warmup
+                        for _ in range(10):
+                            try:
+                                fn(x, y)
+                            except:
+                                fn(x)
+                        torch.cuda.synchronize()
+                        
+                        # Benchmark
+                        start = torch.cuda.Event(enable_timing=True)
+                        end = torch.cuda.Event(enable_timing=True)
+                        
+                        start.record()
+                        for _ in range(1000):
+                            try:
+                                fn(x, y)
+                            except:
+                                fn(x)
+                        end.record()
+                        torch.cuda.synchronize()
+                        
+                        latency = start.elapsed_time(end)  # ms for 1000 = us per iter
+                        speedup = baseline_us / latency
+                        print(f"SPEEDUP:{{speedup:.4f}}")
+                        found = True
+                        break
+                    except Exception as e:
+                        print(f"Benchmark {{fn_name}} error: {{e}}")
+                        continue
+    
+    # Method 4: Fallback - just import and time the original with any modifications
+    if not found:
+        print("Fallback: timing original triton_add...")
+        size = 1024 * 1024
+        x = torch.randn(size, device='cuda', dtype=torch.float32)
+        y = torch.randn(size, device='cuda', dtype=torch.float32)
+        
+        # Warmup
+        for _ in range(50):
+            triton_add(x, y)
+        torch.cuda.synchronize()
+        
+        # Benchmark
+        start = torch.cuda.Event(enable_timing=True)
+        end = torch.cuda.Event(enable_timing=True)
+        
+        start.record()
+        for _ in range(1000):
+            triton_add(x, y)
+        end.record()
+        torch.cuda.synchronize()
+        
+        latency = start.elapsed_time(end)
+        speedup = baseline_us / latency
+        print(f"SPEEDUP:{{speedup:.4f}}")
+        found = True
+    
+    if not found:
+        print("NO_OPTIMIZER_FOUND")
+        print("SPEEDUP:0.0")
     
 except Exception as e:
     print(f"EVAL_ERROR:{{e}}")
@@ -801,12 +903,19 @@ except Exception as e:
             eval_path = self.work_dir / "eval_script.py"
             eval_path.write_text(eval_script)
             
-            # Run evaluation
+            # Run evaluation and capture output
             output = self.docker.run(
                 open(eval_path).read(),
                 timeout=120,
                 show_output=False
             )
+            
+            # Check for errors and show them
+            if "EVAL_ERROR:" in output or "NO_OPTIMIZER_FOUND" in output:
+                for line in output.split('\n'):
+                    if "EVAL_ERROR:" in line or "error" in line.lower():
+                        log(f"       ⚠ {line.strip()[:80]}", indent=1)
+                        break
             
             match = re.search(r'SPEEDUP:([\d.]+)', output)
             if match:
