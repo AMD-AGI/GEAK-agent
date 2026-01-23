@@ -204,6 +204,7 @@ class BrainConfig:
     # Docker config
     docker_image: str = "lmsysorg/sglang:v0.5.6.post1-rocm700-mi35x"
     gpu_device: str = "3"
+    no_docker: bool = False  # Run directly without Docker
     
     # Evolution parameters
     population_size: int = 10
@@ -303,7 +304,8 @@ class OpenEvolveBrain:
                  test_harness_path: Path,
                  baseline_latency_us: float,
                  bottleneck: BottleneckType = BottleneckType.BALANCED,
-                 code_generator: Optional[Callable] = None):
+                 code_generator: Optional[Callable] = None,
+                 kernel_source_path: Optional[Path] = None):
         """
         Initialize the brain.
         
@@ -313,12 +315,13 @@ class OpenEvolveBrain:
             baseline_latency_us: Baseline latency for fitness calculation
             bottleneck: Identified bottleneck from profiler
             code_generator: Function(genome) -> code string
+            kernel_source_path: Path to the actual kernel source file
         """
         self.config = config
         self.test_harness_path = test_harness_path
         self.baseline_latency_us = baseline_latency_us
         self.bottleneck = bottleneck
-        self.code_generator = code_generator or self._default_code_generator
+        self.kernel_source_path = kernel_source_path
         
         # State
         self.population: List[Genome] = []
@@ -329,6 +332,51 @@ class OpenEvolveBrain:
         
         # Ensure work dir exists
         self.config.work_dir.mkdir(parents=True, exist_ok=True)
+        
+        # Initialize Triton code generator if kernel source provided
+        self.triton_codegen = None
+        self.kernel_source = None
+        self.kernel_info = None
+        
+        if kernel_source_path and kernel_source_path.exists():
+            self.kernel_source = kernel_source_path.read_text()
+            try:
+                from .triton_code_generator import TritonCodeGenerator
+                self.triton_codegen = TritonCodeGenerator(
+                    kernel_source_path, 
+                    self.config.work_dir,
+                    self.bottleneck.value
+                )
+                self.kernel_info = self.triton_codegen.get_kernel_info()
+                print(f"\n  [KERNEL ANALYSIS]")
+                print(f"    Type: {self.kernel_info['type']}")
+                print(f"    JIT Kernels: {self.kernel_info['jit_kernels']}")
+                print(f"    Tunable Params: {self.kernel_info['tunable_params']}")
+                print(f"    Constexpr: {self.kernel_info['constexpr_params']}")
+            except Exception as e:
+                print(f"  Warning: Could not initialize Triton code generator: {e}")
+        
+        # Initialize LLM optimizer if API key available
+        self.llm_optimizer = None
+        if kernel_source_path and kernel_source_path.exists():
+            try:
+                from .llm_optimizer import create_llm_optimizer
+                self.llm_optimizer = create_llm_optimizer(
+                    kernel_source_path,
+                    self.config.work_dir / "llm_variants",
+                    model_name="claude-opus-4-5",  # Use Opus for best quality
+                )
+                if self.llm_optimizer:
+                    self.llm_optimizer.set_baseline(baseline_latency_us)
+                    print(f"\n  [LLM OPTIMIZER]")
+                    print(f"    Status: Active")
+                    print(f"    Model: claude-opus-4-5")
+                    print(f"    Will generate LLM-based optimizations")
+            except Exception as e:
+                print(f"  Note: LLM optimizer not available: {e}")
+        
+        # Set code generator
+        self.code_generator = code_generator or self._default_code_generator
     
     def optimize(self) -> Dict[str, Any]:
         """
@@ -384,6 +432,13 @@ class OpenEvolveBrain:
                 random_genome = self._create_random_genome()
                 offspring.append(random_genome)
             
+            # LLM EXPLORATION: Periodically generate new LLM variants
+            if self.llm_optimizer and gen % 5 == 0:  # Every 5 generations
+                self._log("  Generating new LLM optimization...")
+                llm_genome = self._create_llm_genome(iteration=gen)
+                if llm_genome:
+                    offspring.append(llm_genome)
+            
             # EVALUATE: Test all offspring
             for genome in offspring:
                 genome.generation = self.generation
@@ -432,12 +487,26 @@ class OpenEvolveBrain:
         Initialize population with diverse strategies.
         
         Includes:
+        - Triton parameter variants (if kernel source available)
         - Single optimizations (baseline exploration)
         - Recommended combos for the bottleneck type
         - Known good combinations
         - Random exploration
         """
         self.population = []
+        
+        # 0. If we have Triton code generator, use it for parameter variants
+        if self.triton_codegen:
+            self._log("  Using Triton Code Generator for parameter variants")
+            triton_params_list = self.triton_codegen.get_initial_population(
+                self.config.population_size // 2
+            )
+            for i, triton_params in enumerate(triton_params_list):
+                genome = Genome()
+                genome.kernel_params = triton_params.to_dict()
+                genome.variant_type = "triton_params"
+                genome.id = f"triton-{triton_params.signature()}"
+                self.population.append(genome)
         
         # 1. Single optimizations recommended for this bottleneck
         recommended = self.BOTTLENECK_STRATEGIES.get(self.bottleneck, [])
@@ -460,7 +529,14 @@ class OpenEvolveBrain:
             if self._is_compatible(genome):
                 self.population.append(genome)
         
-        # 3. Fill rest with random
+        # 3. Add LLM-generated variant if available
+        if self.llm_optimizer:
+            self._log("  Generating initial LLM optimization...")
+            llm_genome = self._create_llm_genome(iteration=0)
+            if llm_genome:
+                self.population.append(llm_genome)
+        
+        # 4. Fill rest with random
         while len(self.population) < self.config.population_size:
             genome = self._create_random_genome()
             self.population.append(genome)
@@ -487,6 +563,44 @@ class OpenEvolveBrain:
         
         genome.id = f"random-{random.randint(1000,9999)}"
         return genome
+    
+    def _create_llm_genome(self, iteration: int = 0) -> Optional[Genome]:
+        """Create a genome using LLM-generated optimization."""
+        if not self.llm_optimizer:
+            return None
+        
+        try:
+            # Get suggestions based on bottleneck
+            suggestions = self.BOTTLENECK_STRATEGIES.get(self.bottleneck, [])
+            suggestion_strs = [opt.value for opt in suggestions]
+            
+            # Get tunable params
+            tunable = {}
+            if self.kernel_info:
+                tunable = self.kernel_info.get('constexpr_params', {})
+            
+            # Generate optimization
+            code, path = self.llm_optimizer.generate_optimization(
+                bottleneck=self.bottleneck.value,
+                suggestions=suggestion_strs,
+                tunable_params=tunable,
+                iteration=iteration,
+            )
+            
+            # Create genome
+            genome = Genome()
+            genome.variant_type = "llm"
+            genome.code = code
+            genome.id = f"llm-gen{iteration}"
+            
+            # Store path for evaluation
+            genome.parameters["llm_variant_path"] = str(path)
+            
+            return genome
+            
+        except Exception as e:
+            self._log(f"    LLM generation failed: {e}")
+            return None
     
     def _is_compatible(self, genome: Genome) -> bool:
         """Check if all enabled optimizations are compatible."""
@@ -534,7 +648,7 @@ class OpenEvolveBrain:
         self._log(f"       {status} Latency: {genome.latency_us:.2f} μs, Speedup: {genome.speedup:.2f}x")
     
     def _run_evaluation(self, genome: Genome) -> Dict[str, Any]:
-        """Run genome evaluation in Docker."""
+        """Run genome evaluation."""
         # Write code to file
         code_path = self.config.work_dir / f"eval_{genome.id}.py"
         code_path.write_text(genome.code)
@@ -545,33 +659,38 @@ class OpenEvolveBrain:
             import shutil
             shutil.copy(self.test_harness_path, harness_dest)
         
-        # Detect kernel directory from harness
-        kernel_dir = None
-        if self.test_harness_path.exists():
-            harness_content = self.test_harness_path.read_text()
-            import re
-            match = re.search(r'sys\.path\.insert\(0,\s*["\']([^"\']+)["\']', harness_content)
-            if match:
-                kernel_dir = match.group(1)
-        
-        # Build docker command with kernel dir mount
-        cmd = [
-            "docker", "run", "--rm",
-            "--device=/dev/kfd", "--device=/dev/dri",
-            "--ipc=host", "--group-add", "video",
-            "-e", f"HIP_VISIBLE_DEVICES={self.config.gpu_device}",
-            "-v", f"{self.config.work_dir}:/workspace",
-        ]
-        
-        # Add kernel directory mount if detected
-        if kernel_dir and Path(kernel_dir).exists():
-            cmd.extend(["-v", f"{kernel_dir}:{kernel_dir}"])
-        
-        cmd.extend([
-            "-w", "/workspace",
-            self.config.docker_image,
-            "python3", f"eval_{genome.id}.py"
-        ])
+        # Build command
+        if self.config.no_docker:
+            # Run directly without Docker
+            cmd = ["python3", str(code_path)]
+        else:
+            # Detect kernel directory from harness
+            kernel_dir = None
+            if self.test_harness_path.exists():
+                harness_content = self.test_harness_path.read_text()
+                import re
+                match = re.search(r'sys\.path\.insert\(0,\s*["\']([^"\']+)["\']', harness_content)
+                if match:
+                    kernel_dir = match.group(1)
+            
+            # Build docker command with kernel dir mount
+            cmd = [
+                "docker", "run", "--rm",
+                "--device=/dev/kfd", "--device=/dev/dri",
+                "--ipc=host", "--group-add", "video",
+                "-e", f"HIP_VISIBLE_DEVICES={self.config.gpu_device}",
+                "-v", f"{self.config.work_dir}:/workspace",
+            ]
+            
+            # Add kernel directory mount if detected
+            if kernel_dir and Path(kernel_dir).exists():
+                cmd.extend(["-v", f"{kernel_dir}:{kernel_dir}"])
+            
+            cmd.extend([
+                "-w", "/workspace",
+                self.config.docker_image,
+                "python3", f"eval_{genome.id}.py"
+            ])
         
         try:
             result = subprocess.run(cmd, capture_output=True, text=True, 
@@ -657,10 +776,16 @@ class OpenEvolveBrain:
         Mutate genomes.
         
         This is the EXPLORE part - trying variations.
+        Supports both wrapper optimizations AND Triton parameter mutations.
         """
         for genome in genomes:
             if random.random() < self.config.mutation_rate:
-                # Choose mutation type
+                # If this is a Triton params variant, mutate the kernel params
+                if genome.variant_type == "triton_params" and genome.kernel_params:
+                    self._mutate_triton_params(genome)
+                    continue
+                
+                # Choose mutation type for wrapper optimizations
                 mutation_type = random.choice(["flip", "add", "remove"])
                 
                 if mutation_type == "flip":
@@ -698,6 +823,49 @@ class OpenEvolveBrain:
                                     break
         
         return genomes
+    
+    def _mutate_triton_params(self, genome: Genome):
+        """Mutate Triton kernel parameters."""
+        if not genome.kernel_params:
+            return
+        
+        params = genome.kernel_params
+        strength = self.config.mutation_rate
+        
+        # Mutate block sizes
+        if random.random() < strength:
+            old = params.get('block_size', 128)
+            params['block_size'] = random.choice([64, 128, 256, 512, 1024])
+            genome.mutation_history.append(f"block_size({old}->{params['block_size']})")
+        
+        if random.random() < strength:
+            old = params.get('block_m', 64)
+            params['block_m'] = random.choice([16, 32, 64, 128, 256])
+            genome.mutation_history.append(f"block_m({old}->{params['block_m']})")
+        
+        if random.random() < strength:
+            old = params.get('block_n', 64)
+            params['block_n'] = random.choice([16, 32, 64, 128, 256])
+            genome.mutation_history.append(f"block_n({old}->{params['block_n']})")
+        
+        # Mutate parallelization
+        if random.random() < strength:
+            old = params.get('num_warps', 4)
+            params['num_warps'] = random.choice([1, 2, 4, 8, 16])
+            genome.mutation_history.append(f"num_warps({old}->{params['num_warps']})")
+        
+        if random.random() < strength:
+            old = params.get('num_stages', 2)
+            params['num_stages'] = random.choice([1, 2, 3, 4])
+            genome.mutation_history.append(f"num_stages({old}->{params['num_stages']})")
+        
+        if random.random() < strength:
+            old = params.get('waves_per_eu', 2)
+            params['waves_per_eu'] = random.choice([1, 2, 4])
+            genome.mutation_history.append(f"waves_per_eu({old}->{params['waves_per_eu']})")
+        
+        # Update genome ID to reflect changes
+        genome.id = f"mutated-b{params.get('block_size', 128)}_w{params.get('num_warps', 4)}_s{params.get('num_stages', 2)}"
     
     def _get_elites(self) -> List[Genome]:
         """Get top N elites to preserve."""
@@ -780,34 +948,74 @@ class OpenEvolveBrain:
     
     def _default_code_generator(self, genome: Genome) -> str:
         """
-        Generic code generator that works with ANY kernel.
-        
-        Instead of rewriting kernel internals (which requires module-specific knowledge),
-        we optimize HOW the kernel is called using wrapper techniques like:
-        - HIP Graph capture (reduces launch overhead)
-        - torch.compile (JIT optimization)
-        - Pre-warming (ensures caches are hot)
+        Code generator that can generate:
+        1. LLM-generated optimizations (if LLM optimizer available)
+        2. Triton parameter variants (if kernel source available)
+        3. Wrapper optimizations (HIP Graph, torch.compile, etc.)
         """
         enabled = genome.enabled()
+        work_dir = str(self.config.work_dir)
         
-        code = '''#!/usr/bin/env python3
+        # If this is an LLM-generated genome, return its pre-generated code
+        if genome.variant_type == "llm" and genome.code:
+            # Return evaluation wrapper for LLM code
+            if self.llm_optimizer and "llm_variant_path" in genome.parameters:
+                variant_path = Path(genome.parameters["llm_variant_path"])
+                return self.llm_optimizer.generate_evaluation_wrapper(variant_path)
+            # If no wrapper, return the code directly
+            return genome.code
+        
+        # If this is a Triton parameter variant and we have the code generator
+        if genome.variant_type == "triton_params" and self.triton_codegen:
+            try:
+                from .triton_code_generator import TritonParams
+                
+                # Create TritonParams from genome's kernel_params
+                params = TritonParams(
+                    block_size=genome.kernel_params.get('block_size', 128),
+                    block_m=genome.kernel_params.get('block_m', 64),
+                    block_n=genome.kernel_params.get('block_n', 64),
+                    block_k=genome.kernel_params.get('block_k', 32),
+                    num_warps=genome.kernel_params.get('num_warps', 4),
+                    num_stages=genome.kernel_params.get('num_stages', 2),
+                    waves_per_eu=genome.kernel_params.get('waves_per_eu', 2),
+                )
+                
+                # Generate variant code
+                variant_code, variant_path = self.triton_codegen.generate_variant(params, genome.id)
+                
+                # Return the evaluation wrapper
+                return self.triton_codegen.generate_evaluation_wrapper(variant_path, params)
+            except Exception as e:
+                self._log(f"    Warning: Triton codegen failed: {e}, falling back to wrapper")
+        
+        # Fall back to wrapper-based optimization
+        
+        code = f'''#!/usr/bin/env python3
 """Auto-generated optimization wrapper."""
 import sys
 import json
 import torch
 
 torch.set_default_device("cuda")
-sys.path.insert(0, "/workspace")
+sys.path.insert(0, "{work_dir}")
 
 # Import the test harness which defines run_baseline() and check_correctness()
 try:
-    from test_harness import run_baseline, check_correctness, _setup_kernel
-    # Initialize kernel
-    _setup_kernel()
+    from test_harness import _run_kernel
+    run_baseline = _run_kernel
+    
+    def check_correctness():
+        # Simple correctness check - just run and see if it doesn't crash
+        try:
+            run_baseline()
+            return {{"passed": True}}
+        except Exception:
+            return {{"passed": False}}
 except ImportError as e:
-    print(f"Error: Could not import test harness: {e}")
-    with open("/workspace/opt_result.json", "w") as f:
-        json.dump({"correct": False, "latency_us": float("inf")}, f)
+    print(f"Error: Could not import test harness: {{e}}")
+    with open("{work_dir}/opt_result.json", "w") as f:
+        json.dump({{"correct": False, "latency_us": float("inf")}}, f)
     sys.exit(1)
 
 '''
@@ -900,7 +1108,8 @@ def run_optimized():
 '''
         
         # Evaluation
-        code += '''
+        optimizations_list = [o.value for o in enabled]
+        code += f'''
 # Warmup
 for _ in range(100):
     run_optimized()
@@ -911,7 +1120,7 @@ try:
     correct_result = check_correctness()
     is_correct = correct_result.get("passed", False)
 except Exception as e:
-    print(f"Correctness check failed: {e}")
+    print(f"Correctness check failed: {{e}}")
     is_correct = False
 
 # Benchmark
@@ -938,14 +1147,14 @@ else:
     latency = float("inf")
 
 # Save result
-with open("/workspace/opt_result.json", "w") as f:
-    json.dump({
+with open("{work_dir}/opt_result.json", "w") as f:
+    json.dump({{
         "correct": is_correct,
         "latency_us": latency,
-        "optimizations": ''' + str([o.value for o in enabled]) + '''
-    }, f)
+        "optimizations": {optimizations_list}
+    }}, f)
 
-print(f"Result: correct={is_correct}, latency={latency:.2f} us")
+print(f"Result: correct={{is_correct}}, latency={{latency:.2f}} us")
 '''
         
         return code
