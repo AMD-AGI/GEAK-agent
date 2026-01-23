@@ -1,0 +1,50 @@
+[
+    {
+        "params": {
+            "SIZE": 98432,
+            "BLOCK_SIZE_RUNTIME": 1024,
+            "dtype_str": "float16"
+        },
+        "ms": 0.0067,
+        "min_ms": 0.0068,
+        "max_ms": 0.0067,
+        "GB/s": 87.89,
+        "TFLOPS": 0.01
+    },
+    {
+        "params": {
+            "SIZE": 98432,
+            "BLOCK_SIZE_RUNTIME": 1024,
+            "dtype_str": "float32"
+        },
+        "ms": 0.0067,
+        "min_ms": 0.0068,
+        "max_ms": 0.0067,
+        "GB/s": 175.77,
+        "TFLOPS": 0.01
+    },
+    {
+        "params": {
+            "SIZE": 1048576,
+            "BLOCK_SIZE_RUNTIME": 2048,
+            "dtype_str": "float16"
+        },
+        "ms": 0.0071,
+        "min_ms": 0.0073,
+        "max_ms": 0.007,
+        "GB/s": 883.63,
+        "TFLOPS": 0.15
+    },
+    {
+        "params": {
+            "SIZE": 1048576,
+            "BLOCK_SIZE_RUNTIME": 2048,
+            "dtype_str": "float32"
+        },
+        "ms": 0.008,
+        "min_ms": 0.0082,
+        "max_ms": 0.0078,
+        "GB/s": 1580.97,
+        "TFLOPS": 0.13
+    }
+]
