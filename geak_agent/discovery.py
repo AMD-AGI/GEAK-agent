@@ -52,84 +52,30 @@ except ImportError:
 @dataclass
 class DiscoveryConfig:
     """
-    Per-project configuration for discovery patterns.
+    Auto-detected configuration for discovery patterns.
     
-    Can be loaded from:
-    - pyproject.toml [tool.geak] section
-    - .geak.yaml or .geak.json
-    - Passed programmatically
+    This is NOT user-configured - it's automatically detected from the codebase.
+    The discovery pipeline learns:
+    - What test frameworks are used (pytest, gtest, custom)
+    - What custom decorators/functions are used (@perftest, checkAllclose)
+    - Where tests are typically located
     """
-    # Additional test patterns (file globs)
-    extra_test_patterns: List[str] = field(default_factory=list)
-    # Additional benchmark patterns
-    extra_bench_patterns: List[str] = field(default_factory=list)
-    # Additional test content keywords: [(pattern, score), ...]
-    extra_test_keywords: List[tuple] = field(default_factory=list)
-    # Additional benchmark content keywords
-    extra_bench_keywords: List[tuple] = field(default_factory=list)
-    # Additional test directories to search
-    extra_test_dirs: List[str] = field(default_factory=list)
-    # Additional benchmark directories
-    extra_bench_dirs: List[str] = field(default_factory=list)
-    # Directories to exclude from search
-    exclude_dirs: List[str] = field(default_factory=list)
-    # Whether to search C++ files
+    # Auto-detected test keywords from scanning the codebase
+    detected_test_keywords: List[tuple] = field(default_factory=list)
+    # Auto-detected benchmark keywords
+    detected_bench_keywords: List[tuple] = field(default_factory=list)
+    # Auto-detected test directories
+    detected_test_dirs: List[str] = field(default_factory=list)
+    # Auto-detected benchmark directories
+    detected_bench_dirs: List[str] = field(default_factory=list)
+    # Whether C++ files were found
     include_cpp: bool = True
-    # Monorepo boundary markers (stop workspace expansion at these)
+    # Monorepo boundary markers
     monorepo_markers: List[str] = field(default_factory=lambda: [
         "lerna.json", "nx.json", "pnpm-workspace.yaml", "rush.json"
     ])
-    
-    @classmethod
-    def load_from_project(cls, workspace: Path) -> "DiscoveryConfig":
-        """Load config from project files."""
-        config = cls()
-        
-        # Try pyproject.toml
-        pyproject = workspace / "pyproject.toml"
-        if pyproject.exists() and HAS_TOML:
-            try:
-                with open(pyproject, "rb") as f:
-                    data = tomllib.load(f)
-                geak_config = data.get("tool", {}).get("geak", {})
-                config._apply_dict(geak_config)
-            except Exception:
-                pass
-        
-        # Try .geak.json
-        geak_json = workspace / ".geak.json"
-        if geak_json.exists():
-            try:
-                with open(geak_json) as f:
-                    config._apply_dict(json.load(f))
-            except Exception:
-                pass
-        
-        return config
-    
-    def _apply_dict(self, d: Dict[str, Any]):
-        """Apply dictionary config to this instance."""
-        if "test_patterns" in d:
-            self.extra_test_patterns.extend(d["test_patterns"])
-        if "bench_patterns" in d:
-            self.extra_bench_patterns.extend(d["bench_patterns"])
-        if "test_keywords" in d:
-            # Format: [["pattern", score], ...]
-            self.extra_test_keywords.extend(
-                [(k[0], k[1]) for k in d["test_keywords"]]
-            )
-        if "bench_keywords" in d:
-            self.extra_bench_keywords.extend(
-                [(k[0], k[1]) for k in d["bench_keywords"]]
-            )
-        if "test_dirs" in d:
-            self.extra_test_dirs.extend(d["test_dirs"])
-        if "bench_dirs" in d:
-            self.extra_bench_dirs.extend(d["bench_dirs"])
-        if "exclude_dirs" in d:
-            self.exclude_dirs.extend(d["exclude_dirs"])
-        if "include_cpp" in d:
-            self.include_cpp = d["include_cpp"]
+    # Exclude directories
+    exclude_dirs: List[str] = field(default_factory=list)
 
 
 @dataclass
@@ -310,24 +256,81 @@ class DiscoveryPipeline:
         "*_perf.cpp",
     ]
     
-    def __init__(self, workspace_path: Path = None, use_llm: bool = False, config: DiscoveryConfig = None):
+    def __init__(self, workspace_path: Path = None, use_llm: bool = False):
         self.workspace = Path(workspace_path) if workspace_path else Path.cwd()
         self.result = DiscoveryResult(workspace_path=self.workspace)
         self.use_llm = use_llm and HAS_LLM
         self._llm_client = None
         self._kernel_file = None
         
-        # Load or use provided config
-        self.config = config or DiscoveryConfig.load_from_project(self.workspace)
+        # Config is auto-detected, not loaded from files
+        self.config = DiscoveryConfig()
         
-        # Merge config patterns with defaults
-        self._test_keywords = list(self.TEST_CONTENT_KEYWORDS_PYTHON) + self.config.extra_test_keywords
-        self._bench_keywords = list(self.BENCH_CONTENT_KEYWORDS) + self.config.extra_bench_keywords
-        self._test_dirs = ["test", "tests", "op_tests", "unit_tests", "e2e", "integration", "specs"] + self.config.extra_test_dirs
-        self._bench_dirs = ["bench", "benchmark", "benchmarks", "op_benchmarks", "perf", "performance"] + self.config.extra_bench_dirs
+        # Content-based keywords - these are what matter, not directories
+        self._test_keywords = list(self.TEST_CONTENT_KEYWORDS_PYTHON)
+        self._bench_keywords = list(self.BENCH_CONTENT_KEYWORDS)
         
         if self.use_llm:
             self._init_llm()
+    
+    def _auto_detect_patterns(self):
+        """
+        Auto-detect custom test/benchmark patterns from the codebase.
+        
+        Scans a sample of files to learn project-specific patterns:
+        - Custom test decorators (@perftest, @benchmark, etc.)
+        - Custom assertion functions (checkAllclose, verify_output, etc.)
+        - Project-specific imports (from test_common import, etc.)
+        
+        This makes discovery work for ANY project structure without config.
+        """
+        # Patterns to look for in files
+        custom_patterns = {
+            # Custom decorators
+            r"@(\w+test\w*)\s*\(": "test_decorator",
+            r"@(\w*bench\w*)\s*\(": "bench_decorator",
+            r"@(\w*perf\w*)\s*\(": "bench_decorator",
+            # Custom assertion/check functions
+            r"(check\w+)\s*\(": "check_func",
+            r"(verify\w+)\s*\(": "check_func",
+            # Custom imports from test utilities
+            r"from\s+(\w*test_common\w*)\s+import": "test_import",
+        }
+        
+        detected_keywords = set()
+        
+        # Sample files that look like tests (by name)
+        sample_count = 0
+        for py_file in self.workspace.rglob("*test*.py"):
+            if sample_count >= 30:
+                break
+            if self._should_skip_file(py_file):
+                continue
+                
+            try:
+                content = py_file.read_text()[:5000]
+                
+                for pattern, ptype in custom_patterns.items():
+                    for match in re.finditer(pattern, content):
+                        keyword = match.group(1)
+                        # Filter out common/generic patterns
+                        if len(keyword) > 4 and keyword.lower() not in ["test", "assert", "check", "verify"]:
+                            detected_keywords.add((keyword, ptype))
+                
+                sample_count += 1
+            except Exception:
+                continue
+        
+        # Add detected patterns to keywords
+        for keyword, ptype in detected_keywords:
+            if ptype == "test_decorator":
+                self._test_keywords.append((rf"@{keyword}\s*\(", 0.35))
+            elif ptype == "bench_decorator":
+                self._bench_keywords.append((rf"@{keyword}\s*\(", 0.35))
+            elif ptype == "check_func":
+                self._test_keywords.append((rf"{keyword}\s*\(", 0.3))
+            elif ptype == "test_import":
+                self._test_keywords.append((rf"from\s+{keyword}\s+import", 0.25))
     
     def _init_llm(self):
         """Initialize LLM client for smart discovery."""
@@ -428,6 +431,9 @@ Respond with JSON only:
             self._kernel_file = kernel_path
             # Search for workspace root (look for common markers)
             self._expand_workspace_for_file(kernel_path)
+        
+        # Step 0: Auto-detect patterns from the codebase
+        self._auto_detect_patterns()
         
         # Step 1: Discover kernels
         self._discover_kernels(kernel_path)
@@ -588,12 +594,14 @@ Respond with JSON only:
     
     def _discover_tests(self):
         """
-        Discover test files in the workspace (content-based).
+        Discover test files in the workspace (purely content-based).
         
-        Searches:
-        - Python files (.py)
-        - C++ files (.cpp, .cc, .cu, .hip) if config.include_cpp is True
-        - Uses configurable test directories
+        No hardcoded directories - scans everything and scores by content.
+        
+        Strategy:
+        1. Files matching kernel name get priority boost
+        2. All files scored by content keywords
+        3. Rank by final confidence score
         """
         print("\n[2/4] Discovering tests (content-based)...")
         
@@ -604,54 +612,49 @@ Respond with JSON only:
         if self.config.include_cpp:
             extensions.extend([".cpp", ".cc", ".cu", ".hip", ".cxx"])
         
-        # Priority 1: Files matching kernel name (exact or partial)
+        # Get kernel name parts for matching
+        kernel_name = None
+        kernel_parts = []
         if self.result.kernels:
-            for kernel in self.result.kernels:
-                kernel_name = kernel.kernel_name
-                
-                # Exact match search for all supported extensions
-                for ext in extensions:
-                    for test_file in self.workspace.rglob(f"*{kernel_name}*{ext}"):
-                        if self._should_skip_file(test_file) or test_file in seen_paths:
-                            continue
-                        test_info = self._analyze_test_file(test_file)
-                        if test_info:
-                            self.result.tests.append(test_info)
-                            seen_paths.add(test_file)
-                
-                # Partial match: split kernel name by underscore and match key parts
-                # e.g., "moe_op_mxfp4" -> look for files with "moe" AND "mxfp4"
-                parts = [p for p in kernel_name.split("_") if len(p) > 2]
-                if len(parts) >= 2:
-                    for ext in extensions:
-                        for test_file in self.workspace.rglob(f"*test*{ext}"):
-                            if self._should_skip_file(test_file) or test_file in seen_paths:
-                                continue
-                            fname_lower = test_file.name.lower()
-                            # Check if at least 2 key parts match
-                            matches = sum(1 for p in parts if p.lower() in fname_lower)
-                            if matches >= 2:
-                                test_info = self._analyze_test_file(test_file)
-                                if test_info:
-                                    test_info.confidence = min(test_info.confidence + 0.1, 1.0)
-                                    self.result.tests.append(test_info)
-                                    seen_paths.add(test_file)
+            kernel_name = self.result.kernels[0].kernel_name
+            kernel_parts = [p for p in kernel_name.split("_") if len(p) > 2]
         
-        # Priority 2: Files in test directories or with test in name
+        # Get kernel file paths to exclude
+        kernel_files = {k.file_path for k in self.result.kernels}
+        
+        # Scan ALL files, score by content
         for ext in extensions:
-            for test_file in self.workspace.rglob(f"*{ext}"):
-                if self._should_skip_file(test_file) or test_file in seen_paths:
+            for file_path in self.workspace.rglob(f"*{ext}"):
+                if self._should_skip_file(file_path) or file_path in seen_paths:
                     continue
                 
-                # Check if in test directory or has test in name
-                in_test_dir = any(d in test_file.parts for d in self._test_dirs)
-                has_test_name = "test" in test_file.name.lower()
+                # Skip kernel files themselves
+                if file_path in kernel_files:
+                    continue
                 
-                if in_test_dir or has_test_name:
-                    test_info = self._analyze_test_file(test_file)
-                    if test_info:
-                        self.result.tests.append(test_info)
-                        seen_paths.add(test_file)
+                # Skip files that contain kernel definitions (have @triton.jit, etc.)
+                if self._is_kernel_file(file_path):
+                    continue
+                
+                # Analyze file content - must have minimum content confidence
+                test_info = self._analyze_test_file(file_path)
+                if not test_info:
+                    continue
+                
+                # Only boost for kernel name match if content analysis shows it's a test
+                # (confidence >= 0.3 means content has test-like patterns)
+                fname_lower = file_path.name.lower()
+                if kernel_name and kernel_name.lower() in fname_lower:
+                    # Exact kernel name match - highest priority
+                    test_info.confidence += 1.0
+                elif kernel_parts:
+                    # Partial match bonus - proportional to how many parts match
+                    matches = sum(1 for p in kernel_parts if p.lower() in fname_lower)
+                    if matches >= 2:
+                        test_info.confidence += 0.3 * matches
+                
+                self.result.tests.append(test_info)
+                seen_paths.add(file_path)
         
         # Sort by confidence
         self.result.tests.sort(key=lambda t: t.confidence, reverse=True)
@@ -696,11 +699,8 @@ Respond with JSON only:
         if "test" in file_path.name.lower():
             confidence += 0.1
         
-        # Kernel name match bonus
-        for kernel in self.result.kernels:
-            if kernel.kernel_name.lower() in file_path.name.lower():
-                confidence += 0.15
-                break
+        # NOTE: Kernel name matching is done in the main discovery loop, not here
+        # This ensures we only boost files that already pass content-based detection
         
         # LLM fallback for uncertain cases (0.3-0.6 confidence)
         if 0.3 <= confidence <= 0.6 and self.use_llm:
@@ -766,12 +766,14 @@ Respond with JSON only:
     
     def _discover_benchmarks(self):
         """
-        Discover benchmark files in the workspace (content-based).
+        Discover benchmark files in the workspace (purely content-based).
         
-        Searches:
-        - Python files (.py)
-        - C++ files (.cpp, .cc, .cu, .hip) if config.include_cpp is True
-        - Uses configurable benchmark directories
+        No hardcoded directories - scans everything and scores by content.
+        
+        Strategy:
+        1. Files matching kernel name get priority boost
+        2. All files scored by content keywords (TFLOPS, latency, etc.)
+        3. Rank by final confidence score
         """
         print("\n[3/4] Discovering benchmarks (content-based)...")
         
@@ -782,52 +784,49 @@ Respond with JSON only:
         if self.config.include_cpp:
             extensions.extend([".cpp", ".cc", ".cu", ".hip", ".cxx"])
         
-        # Priority 1: Files matching kernel name (exact or partial)
+        # Get kernel name parts for matching
+        kernel_name = None
+        kernel_parts = []
         if self.result.kernels:
-            for kernel in self.result.kernels:
-                kernel_name = kernel.kernel_name
-                
-                # Exact match search for all supported extensions
-                for ext in extensions:
-                    for bench_file in self.workspace.rglob(f"*{kernel_name}*{ext}"):
-                        if self._should_skip_file(bench_file) or bench_file in seen_paths:
-                            continue
-                        bench_info = self._analyze_bench_file(bench_file)
-                        if bench_info:
-                            self.result.benchmarks.append(bench_info)
-                            seen_paths.add(bench_file)
-                
-                # Partial match for benchmarks
-                parts = [p for p in kernel_name.split("_") if len(p) > 2]
-                if len(parts) >= 2:
-                    for ext in extensions:
-                        for bench_file in self.workspace.rglob(f"*bench*{ext}"):
-                            if self._should_skip_file(bench_file) or bench_file in seen_paths:
-                                continue
-                            fname_lower = bench_file.name.lower()
-                            matches = sum(1 for p in parts if p.lower() in fname_lower)
-                            if matches >= 2:
-                                bench_info = self._analyze_bench_file(bench_file)
-                                if bench_info:
-                                    bench_info.confidence = min(bench_info.confidence + 0.1, 1.0)
-                                    self.result.benchmarks.append(bench_info)
-                                    seen_paths.add(bench_file)
+            kernel_name = self.result.kernels[0].kernel_name
+            kernel_parts = [p for p in kernel_name.split("_") if len(p) > 2]
         
-        # Priority 2: Files in benchmark directories or with bench/perf in name
+        # Get kernel file paths to exclude
+        kernel_files = {k.file_path for k in self.result.kernels}
+        
+        # Scan ALL files, score by content
         for ext in extensions:
-            for bench_file in self.workspace.rglob(f"*{ext}"):
-                if self._should_skip_file(bench_file) or bench_file in seen_paths:
+            for file_path in self.workspace.rglob(f"*{ext}"):
+                if self._should_skip_file(file_path) or file_path in seen_paths:
                     continue
                 
-                # Check if in bench directory or has bench/perf in name
-                in_bench_dir = any(d in bench_file.parts for d in self._bench_dirs)
-                has_bench_name = "bench" in bench_file.name.lower() or "perf" in bench_file.name.lower()
+                # Skip kernel files themselves
+                if file_path in kernel_files:
+                    continue
                 
-                if in_bench_dir or has_bench_name:
-                    bench_info = self._analyze_bench_file(bench_file)
-                    if bench_info:
-                        self.result.benchmarks.append(bench_info)
-                        seen_paths.add(bench_file)
+                # Skip files that contain kernel definitions
+                if self._is_kernel_file(file_path):
+                    continue
+                
+                # Analyze file content
+                bench_info = self._analyze_bench_file(file_path)
+                if not bench_info:
+                    continue
+                
+                # Boost score for kernel name match (this is what matters most)
+                # Allow confidence > 1.0 for ranking, display capped at 100%
+                fname_lower = file_path.name.lower()
+                if kernel_name and kernel_name.lower() in fname_lower:
+                    # Exact kernel name match - highest priority
+                    bench_info.confidence += 1.0
+                elif kernel_parts:
+                    # Partial match bonus - proportional to how many parts match
+                    matches = sum(1 for p in kernel_parts if p.lower() in fname_lower)
+                    if matches >= 2:
+                        bench_info.confidence += 0.3 * matches
+                
+                self.result.benchmarks.append(bench_info)
+                seen_paths.add(file_path)
         
         # Sort by confidence
         self.result.benchmarks.sort(key=lambda b: b.confidence, reverse=True)
@@ -866,12 +865,9 @@ Respond with JSON only:
         if "bench" in file_path.name.lower() or "perf" in file_path.name.lower():
             confidence += 0.1
         
-        # Kernel name match bonus
-        for kernel in self.result.kernels:
-            if kernel.kernel_name.lower() in file_path.name.lower():
-                confidence += 0.15
-                break
-        
+        # NOTE: Kernel name matching is done in the main discovery loop, not here
+        # This ensures we only boost files that already pass content-based detection
+
         # LLM fallback for uncertain cases (0.3-0.6 confidence)
         if 0.3 <= confidence <= 0.6 and self.use_llm:
             llm_result = self._llm_analyze_file(file_path, "benchmark")
@@ -937,6 +933,20 @@ Respond with JSON only:
         
         return False
     
+    def _is_kernel_file(self, file_path: Path) -> bool:
+        """Check if a file is a kernel definition file (should not be treated as test/bench)."""
+        try:
+            content = file_path.read_text()[:2000]
+        except Exception:
+            return False
+        
+        # Check for kernel definition patterns
+        for pattern in self.KERNEL_PATTERNS:
+            if re.search(pattern, content):
+                return True
+        
+        return False
+    
     def _display_findings(self):
         """Display discovery findings to the user."""
         print("\n[4/4] Discovery complete!")
@@ -957,7 +967,7 @@ Respond with JSON only:
         print("\n  TESTS FOUND:")
         if self.result.tests:
             for t in self.result.tests:
-                conf_pct = int(t.confidence * 100)
+                conf_pct = min(int(t.confidence * 100), 100)  # Cap at 100% for display
                 print(f"    - {t.file_path.name} ({t.test_type}, {conf_pct}% confidence)")
                 print(f"      Command: {t.command}")
         else:
@@ -967,7 +977,7 @@ Respond with JSON only:
         print("\n  BENCHMARKS FOUND:")
         if self.result.benchmarks:
             for b in self.result.benchmarks:
-                conf_pct = int(b.confidence * 100)
+                conf_pct = min(int(b.confidence * 100), 100)  # Cap at 100% for display
                 print(f"    - {b.file_path.name} ({b.bench_type}, {conf_pct}% confidence)")
                 print(f"      Command: {b.command}")
         else:
@@ -1045,11 +1055,12 @@ def discover(
     test_command: str = None,
     bench_command: str = None,
     interactive: bool = True,
-    use_llm: bool = False,
-    config: DiscoveryConfig = None
+    use_llm: bool = False
 ) -> DiscoveryResult:
     """
     Run discovery pipeline.
+    
+    Patterns are auto-detected from the codebase - no configuration needed.
     
     Args:
         workspace: Workspace directory to search
@@ -1057,8 +1068,7 @@ def discover(
         test_command: User-provided test command
         bench_command: User-provided benchmark command
         interactive: Whether to prompt for confirmation
-        use_llm: Whether to use LLM for smart analysis
-        config: Optional DiscoveryConfig for custom patterns
+        use_llm: Whether to use LLM for uncertain cases
     
     Returns:
         DiscoveryResult with all discovered information
@@ -1068,7 +1078,7 @@ def discover(
         kernel_path = Path(workspace)
         workspace = kernel_path.parent
     
-    pipeline = DiscoveryPipeline(workspace, use_llm=use_llm, config=config)
+    pipeline = DiscoveryPipeline(workspace, use_llm=use_llm)
     return pipeline.run(
         kernel_path=kernel_path,
         test_command=test_command,
