@@ -109,16 +109,72 @@ class BottleneckType(Enum):
 
 
 class ProfilerIntegration:
-    """Integrates with rocprofv3 for bottleneck analysis."""
+    """Integrates with rocprofv3 or metrix for bottleneck analysis."""
     
-    def __init__(self, docker_image: str, gpu_device: str, work_dir: Path, no_docker: bool = False):
+    def __init__(self, docker_image: str, gpu_device: str, work_dir: Path, no_docker: bool = False, use_metrix: bool = False):
         self.docker_image = docker_image
         self.gpu_device = gpu_device
         self.work_dir = work_dir
         self.no_docker = no_docker
+        self.use_metrix = use_metrix
     
     def analyze(self, harness_path: Path) -> Dict[str, Any]:
         """Profile kernel and identify bottleneck."""
+        if self.use_metrix:
+            return self._analyze_with_metrix(harness_path)
+        else:
+            return self._analyze_default(harness_path)
+    
+    def _analyze_with_metrix(self, harness_path: Path) -> Dict[str, Any]:
+        """Profile using metrix for detailed hardware metrics via MetrixTool."""
+        print("\n  [METRIX] Analyzing kernel with hardware counters...")
+        
+        # Use MetrixTool for the actual profiling (single source of truth)
+        from mini_kernel.mcp_tools.metrix import MetrixTool
+        
+        # Generate runner script that imports from test_harness
+        runner_code = f'''
+import sys
+sys.path.insert(0, "{self.work_dir}")
+from test_harness import _run_kernel
+
+def run_baseline():
+    return _run_kernel()
+'''
+        
+        # Create a temporary MetrixTool instance
+        metrix_tool = MetrixTool(gpu_device=self.gpu_device)
+        metrix_tool.work_dir = self.work_dir  # Use our work_dir
+        
+        result = metrix_tool.profile(runner_code, num_replays=3)
+        
+        # Map MetrixTool's BottleneckType to our BottleneckType
+        bottleneck_map = {
+            "compute": BottleneckType.COMPUTE,
+            "memory": BottleneckType.MEMORY,
+            "latency": BottleneckType.LATENCY,
+            "lds": BottleneckType.LDS,
+            "balanced": BottleneckType.BALANCED,
+        }
+        bottleneck = bottleneck_map.get(result.bottleneck.value, BottleneckType.BALANCED)
+        
+        # Print results
+        display_name = result.kernel_name[:70] + "..." if len(result.kernel_name) > 70 else result.kernel_name
+        print(f"  [METRIX] Kernel: {display_name}")
+        print(f"  [METRIX] Duration: {result.duration_us:.2f} μs")
+        print(f"  [METRIX] Coalescing: {result.coalescing_efficiency:.1f}%, HBM util: {result.hbm_bandwidth_utilization:.1f}%, Arith intensity: {result.arithmetic_intensity:.1f}")
+        print(f"  [METRIX] Bottleneck: {bottleneck.value}")
+        for s in result.suggestions[:3]:
+            print(f"    → {s}")
+        
+        return {
+            "bottleneck": bottleneck,
+            "suggestions": result.suggestions,
+            "metrics": result.raw_metrics
+        }
+    
+    def _analyze_default(self, harness_path: Path) -> Dict[str, Any]:
+        """Default profiling using simple timing analysis."""
         print("\n  [PROFILER] Analyzing kernel bottlenecks...")
         
         # Generate profiling script
@@ -286,6 +342,7 @@ class AgentConfig:
     max_iterations: int = 8
     use_evolution: bool = False
     no_docker: bool = False  # Run directly without spawning Docker
+    use_metrix: bool = False  # Use metrix for detailed hardware profiling
 
 
 class UnifiedAgent:
@@ -301,7 +358,8 @@ class UnifiedAgent:
             self.config.docker_image,
             self.config.gpu_device,
             self.config.work_dir,
-            self.config.no_docker
+            self.config.no_docker,
+            self.config.use_metrix
         )
         
         self.kernels: List[KernelInfo] = []
@@ -1042,6 +1100,7 @@ def main():
     parser.add_argument("--work-dir", "-w", help="Working directory")
     parser.add_argument("--evolve", "-e", action="store_true", help="Use OpenEvolve brain")
     parser.add_argument("--no-docker", "-n", action="store_true", help="Run directly without Docker (use when already in container)")
+    parser.add_argument("--metrix", "-m", action="store_true", help="Use metrix for detailed hardware profiling (requires metrix installed)")
     
     args = parser.parse_args()
     
@@ -1058,7 +1117,8 @@ def main():
         gpu_device=args.gpu,
         max_iterations=args.iterations,
         use_evolution=args.evolve,
-        no_docker=args.no_docker
+        no_docker=args.no_docker,
+        use_metrix=args.metrix
     )
     
     agent = UnifiedAgent(target, config)
