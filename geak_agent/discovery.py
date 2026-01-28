@@ -5,23 +5,41 @@ This module handles:
 2. Test discovery - Find existing tests or prompt to create (content-based)
 3. Benchmark discovery - Find performance benchmarks (content-based)
 4. User confirmation - Interactive prompts to confirm/edit
-5. LLM-assisted analysis - Optional LLM for smarter discovery
+5. LLM-assisted analysis - Optional LLM for uncertain cases
+6. Configurable patterns - Per-project customization via config files
 
 Discovery Modes:
 - User provides: --test "pytest..." --bench "python..."
 - Agent discovers: Search repo for test files, confirm with user
 - Agent creates: (TODO) Help create tests if none exist
 
+Supported Languages:
+- Python: pytest, unittest, custom frameworks
+- C++: GTest, Catch2, custom test harnesses
+- HIP/CUDA: kernel tests
+
 Content-based detection keywords:
-- Tests: assert, pytest, allclose, correctness, assertEqual, expect
+- Tests: assert, pytest, allclose, correctness, assertEqual, TEST(), EXPECT_*
 - Benchmarks: elapsed_time, latency, throughput, TFLOPS, benchmark, warmup
 """
 
+import json
 import os
 import re
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Optional
+from typing import Optional, Dict, List, Any
+
+# Try to import TOML support
+try:
+    import tomllib
+    HAS_TOML = True
+except ImportError:
+    try:
+        import tomli as tomllib
+        HAS_TOML = True
+    except ImportError:
+        HAS_TOML = False
 
 # Try to import LLM support
 try:
@@ -29,6 +47,89 @@ try:
     HAS_LLM = True
 except ImportError:
     HAS_LLM = False
+
+
+@dataclass
+class DiscoveryConfig:
+    """
+    Per-project configuration for discovery patterns.
+    
+    Can be loaded from:
+    - pyproject.toml [tool.geak] section
+    - .geak.yaml or .geak.json
+    - Passed programmatically
+    """
+    # Additional test patterns (file globs)
+    extra_test_patterns: List[str] = field(default_factory=list)
+    # Additional benchmark patterns
+    extra_bench_patterns: List[str] = field(default_factory=list)
+    # Additional test content keywords: [(pattern, score), ...]
+    extra_test_keywords: List[tuple] = field(default_factory=list)
+    # Additional benchmark content keywords
+    extra_bench_keywords: List[tuple] = field(default_factory=list)
+    # Additional test directories to search
+    extra_test_dirs: List[str] = field(default_factory=list)
+    # Additional benchmark directories
+    extra_bench_dirs: List[str] = field(default_factory=list)
+    # Directories to exclude from search
+    exclude_dirs: List[str] = field(default_factory=list)
+    # Whether to search C++ files
+    include_cpp: bool = True
+    # Monorepo boundary markers (stop workspace expansion at these)
+    monorepo_markers: List[str] = field(default_factory=lambda: [
+        "lerna.json", "nx.json", "pnpm-workspace.yaml", "rush.json"
+    ])
+    
+    @classmethod
+    def load_from_project(cls, workspace: Path) -> "DiscoveryConfig":
+        """Load config from project files."""
+        config = cls()
+        
+        # Try pyproject.toml
+        pyproject = workspace / "pyproject.toml"
+        if pyproject.exists() and HAS_TOML:
+            try:
+                with open(pyproject, "rb") as f:
+                    data = tomllib.load(f)
+                geak_config = data.get("tool", {}).get("geak", {})
+                config._apply_dict(geak_config)
+            except Exception:
+                pass
+        
+        # Try .geak.json
+        geak_json = workspace / ".geak.json"
+        if geak_json.exists():
+            try:
+                with open(geak_json) as f:
+                    config._apply_dict(json.load(f))
+            except Exception:
+                pass
+        
+        return config
+    
+    def _apply_dict(self, d: Dict[str, Any]):
+        """Apply dictionary config to this instance."""
+        if "test_patterns" in d:
+            self.extra_test_patterns.extend(d["test_patterns"])
+        if "bench_patterns" in d:
+            self.extra_bench_patterns.extend(d["bench_patterns"])
+        if "test_keywords" in d:
+            # Format: [["pattern", score], ...]
+            self.extra_test_keywords.extend(
+                [(k[0], k[1]) for k in d["test_keywords"]]
+            )
+        if "bench_keywords" in d:
+            self.extra_bench_keywords.extend(
+                [(k[0], k[1]) for k in d["bench_keywords"]]
+            )
+        if "test_dirs" in d:
+            self.extra_test_dirs.extend(d["test_dirs"])
+        if "bench_dirs" in d:
+            self.extra_bench_dirs.extend(d["bench_dirs"])
+        if "exclude_dirs" in d:
+            self.exclude_dirs.extend(d["exclude_dirs"])
+        if "include_cpp" in d:
+            self.include_cpp = d["include_cpp"]
 
 
 @dataclass
@@ -81,7 +182,8 @@ class DiscoveryPipeline:
     2. If not, search for test/bench files (CONTENT-BASED)
     3. Present findings to user for confirmation
     4. Offer to create tests if none found (TODO)
-    5. Optionally use LLM for smarter analysis
+    5. Use LLM for uncertain cases (confidence 0.3-0.6)
+    6. Support configurable patterns per-project
     """
     
     # Patterns for finding kernel files
@@ -92,8 +194,8 @@ class DiscoveryPipeline:
         r"tl\.load|tl\.store",  # Triton ops
     ]
     
-    # Content keywords for TEST detection (more reliable than filename)
-    TEST_CONTENT_KEYWORDS = [
+    # Content keywords for PYTHON TEST detection
+    TEST_CONTENT_KEYWORDS_PYTHON = [
         # Pytest
         (r"import pytest", 0.3),
         (r"@pytest\.mark", 0.3),
@@ -103,6 +205,10 @@ class DiscoveryPipeline:
         (r"\.allclose\(", 0.3),
         (r"\.assertEqual\(", 0.2),
         (r"torch\.testing\.assert", 0.3),
+        # Custom test frameworks (aiter)
+        (r"@perftest\(\)", 0.35),
+        (r"checkAllclose", 0.35),
+        (r"from.*test_common import", 0.2),
         # Correctness checking
         (r"correctness", 0.2),
         (r"verify|verification", 0.15),
@@ -111,6 +217,31 @@ class DiscoveryPipeline:
         # Test structure
         (r"class Test\w+", 0.3),
         (r"unittest", 0.2),
+    ]
+    
+    # Content keywords for C++ TEST detection (GTest, Catch2, etc.)
+    TEST_CONTENT_KEYWORDS_CPP = [
+        # GTest
+        (r"#include\s*[<\"]gtest", 0.4),
+        (r"TEST\s*\(\s*\w+\s*,", 0.5),
+        (r"TEST_F\s*\(\s*\w+\s*,", 0.5),
+        (r"TEST_P\s*\(\s*\w+\s*,", 0.5),
+        (r"EXPECT_TRUE|EXPECT_FALSE", 0.3),
+        (r"EXPECT_EQ|EXPECT_NE|EXPECT_LT|EXPECT_GT", 0.35),
+        (r"ASSERT_TRUE|ASSERT_FALSE", 0.3),
+        (r"ASSERT_EQ|ASSERT_NE", 0.35),
+        # Catch2
+        (r"#include\s*[<\"]catch", 0.4),
+        (r"TEST_CASE\s*\(", 0.5),
+        (r"SECTION\s*\(", 0.25),
+        (r"REQUIRE\s*\(", 0.35),
+        (r"CHECK\s*\(", 0.3),
+        # HIP/CUDA test patterns
+        (r"hipMemcpy.*hipMemcpyDeviceToHost", 0.2),
+        (r"cudaMemcpy.*cudaMemcpyDeviceToHost", 0.2),
+        # Generic C++ test patterns
+        (r"void\s+test_\w+\s*\(", 0.3),
+        (r"compare.*reference|reference.*compare", 0.2),
     ]
     
     # Content keywords for BENCHMARK detection
@@ -133,6 +264,10 @@ class DiscoveryPipeline:
         (r"GB/s|TB/s", 0.3),
         (r"bandwidth", 0.2),
         (r"median|percentile|p50|p99", 0.2),
+        # C++ benchmark patterns
+        (r"std::chrono", 0.25),
+        (r"hipEventElapsedTime|cudaEventElapsedTime", 0.4),
+        (r"hipEventRecord|cudaEventRecord", 0.3),
     ]
     
     # Filename patterns (lower priority than content)
@@ -141,6 +276,21 @@ class DiscoveryPipeline:
         "*_test.py",
         "tests/*.py",
         "test/*.py",
+        # Additional patterns
+        "check_*.py",
+        "verify_*.py",
+    ]
+    
+    # C++ test file patterns
+    TEST_FILE_PATTERNS_CPP = [
+        "test_*.cpp",
+        "*_test.cpp",
+        "test_*.cu",
+        "*_test.cu",
+        "test_*.hip",
+        "*_test.hip",
+        "*_test.cc",
+        "test_*.cc",
     ]
     
     BENCH_FILE_PATTERNS = [
@@ -148,13 +298,33 @@ class DiscoveryPipeline:
         "*benchmark*.py",
         "*_perf.py",
         "perf_*.py",
+        # Additional patterns
+        "perf/*.py",
+        "performance_*.py",
     ]
     
-    def __init__(self, workspace_path: Path = None, use_llm: bool = False):
+    BENCH_FILE_PATTERNS_CPP = [
+        "bench*.cpp",
+        "*benchmark*.cpp",
+        "bench*.cu",
+        "*_perf.cpp",
+    ]
+    
+    def __init__(self, workspace_path: Path = None, use_llm: bool = False, config: DiscoveryConfig = None):
         self.workspace = Path(workspace_path) if workspace_path else Path.cwd()
         self.result = DiscoveryResult(workspace_path=self.workspace)
         self.use_llm = use_llm and HAS_LLM
         self._llm_client = None
+        self._kernel_file = None
+        
+        # Load or use provided config
+        self.config = config or DiscoveryConfig.load_from_project(self.workspace)
+        
+        # Merge config patterns with defaults
+        self._test_keywords = list(self.TEST_CONTENT_KEYWORDS_PYTHON) + self.config.extra_test_keywords
+        self._bench_keywords = list(self.BENCH_CONTENT_KEYWORDS) + self.config.extra_bench_keywords
+        self._test_dirs = ["test", "tests", "op_tests", "unit_tests", "e2e", "integration", "specs"] + self.config.extra_test_dirs
+        self._bench_dirs = ["bench", "benchmark", "benchmarks", "op_benchmarks", "perf", "performance"] + self.config.extra_bench_dirs
         
         if self.use_llm:
             self._init_llm()
@@ -295,23 +465,51 @@ Respond with JSON only:
         return self.result
     
     def _expand_workspace_for_file(self, kernel_file: Path):
-        """Expand workspace when given a single file to find related tests."""
-        # Look for common project root markers
-        markers = ["pyproject.toml", "setup.py", "setup.cfg", ".git", "op_tests", "tests"]
+        """
+        Expand workspace when given a single file to find related tests.
+        
+        Smart expansion:
+        - Stops at project root markers (pyproject.toml, .git, etc.)
+        - Stops at monorepo boundaries (lerna.json, nx.json, etc.)
+        - Prefers the closest valid root
+        """
+        # Project root markers (we want to expand TO these)
+        project_markers = ["pyproject.toml", "setup.py", "setup.cfg", ".git", "op_tests", "tests", "Makefile", "CMakeLists.txt"]
+        
+        # Monorepo markers (we want to STOP BEFORE these if they're not the immediate parent)
+        monorepo_markers = self.config.monorepo_markers
         
         current = kernel_file.parent
-        for _ in range(10):  # Max 10 levels up
-            for marker in markers:
+        best_workspace = None
+        
+        for depth in range(15):  # Max 15 levels up
+            # Check for monorepo boundary (stop expansion)
+            if depth > 0:  # Allow immediate parent
+                for marker in monorepo_markers:
+                    if (current / marker).exists():
+                        print(f"      Monorepo boundary detected at: {current}")
+                        if best_workspace:
+                            self.workspace = best_workspace
+                            self.result.workspace_path = best_workspace
+                            print(f"      Expanded workspace to: {best_workspace}")
+                        return
+            
+            # Check for project root markers
+            for marker in project_markers:
                 if (current / marker).exists():
-                    self.workspace = current
-                    self.result.workspace_path = current
-                    print(f"      Expanded workspace to: {current}")
-                    return
+                    best_workspace = current
+                    break
             
             parent = current.parent
-            if parent == current:  # Reached root
+            if parent == current:  # Reached filesystem root
                 break
             current = parent
+        
+        # Use best found workspace
+        if best_workspace:
+            self.workspace = best_workspace
+            self.result.workspace_path = best_workspace
+            print(f"      Expanded workspace to: {best_workspace}")
     
     def _discover_kernels(self, kernel_path: Optional[Path] = None):
         """Discover kernel files in the workspace."""
@@ -375,8 +573,9 @@ Respond with JSON only:
             if match.group(1) not in function_names:
                 function_names.append(match.group(1))
         
-        # Extract kernel name from first JIT function or file name
-        kernel_name = function_names[0] if function_names else file_path.stem
+        # Use file stem as kernel name (more reliable for matching tests/benchmarks)
+        # Function names may be helpers like "fast_exp" that don't match test names
+        kernel_name = file_path.stem
         
         return KernelInfo(
             file_path=file_path,
@@ -388,38 +587,71 @@ Respond with JSON only:
         )
     
     def _discover_tests(self):
-        """Discover test files in the workspace (content-based)."""
+        """
+        Discover test files in the workspace (content-based).
+        
+        Searches:
+        - Python files (.py)
+        - C++ files (.cpp, .cc, .cu, .hip) if config.include_cpp is True
+        - Uses configurable test directories
+        """
         print("\n[2/4] Discovering tests (content-based)...")
         
         seen_paths = set()
         
-        # Priority 1: Files matching kernel name
+        # File extensions to search
+        extensions = [".py"]
+        if self.config.include_cpp:
+            extensions.extend([".cpp", ".cc", ".cu", ".hip", ".cxx"])
+        
+        # Priority 1: Files matching kernel name (exact or partial)
         if self.result.kernels:
             for kernel in self.result.kernels:
                 kernel_name = kernel.kernel_name
-                for py_file in self.workspace.rglob(f"*{kernel_name}*.py"):
-                    if self._should_skip_file(py_file) or py_file in seen_paths:
-                        continue
-                    test_info = self._analyze_test_file(py_file)
-                    if test_info:
-                        self.result.tests.append(test_info)
-                        seen_paths.add(py_file)
+                
+                # Exact match search for all supported extensions
+                for ext in extensions:
+                    for test_file in self.workspace.rglob(f"*{kernel_name}*{ext}"):
+                        if self._should_skip_file(test_file) or test_file in seen_paths:
+                            continue
+                        test_info = self._analyze_test_file(test_file)
+                        if test_info:
+                            self.result.tests.append(test_info)
+                            seen_paths.add(test_file)
+                
+                # Partial match: split kernel name by underscore and match key parts
+                # e.g., "moe_op_mxfp4" -> look for files with "moe" AND "mxfp4"
+                parts = [p for p in kernel_name.split("_") if len(p) > 2]
+                if len(parts) >= 2:
+                    for ext in extensions:
+                        for test_file in self.workspace.rglob(f"*test*{ext}"):
+                            if self._should_skip_file(test_file) or test_file in seen_paths:
+                                continue
+                            fname_lower = test_file.name.lower()
+                            # Check if at least 2 key parts match
+                            matches = sum(1 for p in parts if p.lower() in fname_lower)
+                            if matches >= 2:
+                                test_info = self._analyze_test_file(test_file)
+                                if test_info:
+                                    test_info.confidence = min(test_info.confidence + 0.1, 1.0)
+                                    self.result.tests.append(test_info)
+                                    seen_paths.add(test_file)
         
         # Priority 2: Files in test directories or with test in name
-        test_dirs = ["test", "tests", "op_tests", "unit_tests"]
-        for py_file in self.workspace.rglob("*.py"):
-            if self._should_skip_file(py_file) or py_file in seen_paths:
-                continue
-            
-            # Check if in test directory or has test in name
-            in_test_dir = any(d in py_file.parts for d in test_dirs)
-            has_test_name = "test" in py_file.name.lower()
-            
-            if in_test_dir or has_test_name:
-                test_info = self._analyze_test_file(py_file)
-                if test_info:
-                    self.result.tests.append(test_info)
-                    seen_paths.add(py_file)
+        for ext in extensions:
+            for test_file in self.workspace.rglob(f"*{ext}"):
+                if self._should_skip_file(test_file) or test_file in seen_paths:
+                    continue
+                
+                # Check if in test directory or has test in name
+                in_test_dir = any(d in test_file.parts for d in self._test_dirs)
+                has_test_name = "test" in test_file.name.lower()
+                
+                if in_test_dir or has_test_name:
+                    test_info = self._analyze_test_file(test_file)
+                    if test_info:
+                        self.result.tests.append(test_info)
+                        seen_paths.add(test_file)
         
         # Sort by confidence
         self.result.tests.sort(key=lambda t: t.confidence, reverse=True)
@@ -432,7 +664,14 @@ Respond with JSON only:
             print(f"      Found {len(self.result.tests)} potential test(s)")
     
     def _analyze_test_file(self, file_path: Path) -> Optional[TestInfo]:
-        """Analyze a file to determine if it's a test (content-based)."""
+        """
+        Analyze a file to determine if it's a test (content-based).
+        
+        Supports:
+        - Python: pytest, unittest, custom frameworks
+        - C++: GTest, Catch2, custom test harnesses
+        - LLM fallback for uncertain cases
+        """
         try:
             content = file_path.read_text()
         except Exception:
@@ -440,10 +679,17 @@ Respond with JSON only:
         
         confidence = 0.0
         test_type = "script"
+        is_cpp = file_path.suffix in [".cpp", ".cc", ".cu", ".hip", ".cxx"]
+        
+        # Select appropriate keywords based on file type
+        if is_cpp and self.config.include_cpp:
+            keywords = self.TEST_CONTENT_KEYWORDS_CPP
+        else:
+            keywords = self._test_keywords
         
         # Content-based scoring
-        for pattern, score in self.TEST_CONTENT_KEYWORDS:
-            if re.search(pattern, content, re.IGNORECASE):
+        for pattern, score in keywords:
+            if re.search(pattern, content, re.IGNORECASE if not is_cpp else 0):
                 confidence += score
         
         # Filename bonus (lower priority than content)
@@ -456,23 +702,60 @@ Respond with JSON only:
                 confidence += 0.15
                 break
         
+        # LLM fallback for uncertain cases (0.3-0.6 confidence)
+        if 0.3 <= confidence <= 0.6 and self.use_llm:
+            llm_result = self._llm_analyze_file(file_path, "test")
+            if llm_result and llm_result.get("is_test"):
+                confidence = max(confidence, llm_result.get("confidence", 0.7))
+                if llm_result.get("command"):
+                    # Use LLM's suggested command
+                    return TestInfo(
+                        file_path=file_path,
+                        test_type="llm-detected",
+                        command=llm_result["command"],
+                        confidence=min(confidence, 1.0)
+                    )
+        
         # Must have minimum confidence to be considered a test
         if confidence < 0.3:
             return None
         
-        # Determine test type
-        if "import pytest" in content or "@pytest" in content:
-            test_type = "pytest"
-        elif "unittest" in content:
-            test_type = "unittest"
-        
-        # Generate command
-        if test_type == "pytest":
-            command = f"pytest {file_path} -v"
-        elif test_type == "unittest":
-            command = f"python -m unittest {file_path}"
+        # Determine test type and command for Python files
+        if not is_cpp:
+            if "import pytest" in content or "@pytest" in content:
+                test_type = "pytest"
+            elif "unittest" in content:
+                test_type = "unittest"
+            
+            if test_type == "pytest":
+                command = f"pytest {file_path} -v"
+            elif test_type == "unittest":
+                command = f"python -m unittest {file_path}"
+            else:
+                command = f"python {file_path}"
         else:
-            command = f"python {file_path}"
+            # C++ test command generation
+            if "gtest" in content.lower() or "TEST(" in content:
+                test_type = "gtest"
+            elif "catch" in content.lower() or "TEST_CASE" in content:
+                test_type = "catch2"
+            else:
+                test_type = "cpp"
+            
+            # For C++, we typically need to build first
+            # Look for a Makefile or CMakeLists.txt
+            parent = file_path.parent
+            if (parent / "Makefile").exists():
+                command = f"make -C {parent} && ./{file_path.stem}"
+            elif (parent / "CMakeLists.txt").exists():
+                command = f"cd {parent} && cmake -B build && cmake --build build && ./build/{file_path.stem}"
+            else:
+                # Assume hipcc/nvcc compilation
+                if file_path.suffix in [".cu", ".hip"]:
+                    compiler = "hipcc" if file_path.suffix == ".hip" else "nvcc"
+                    command = f"{compiler} {file_path} -o /tmp/{file_path.stem} && /tmp/{file_path.stem}"
+                else:
+                    command = f"g++ {file_path} -lgtest -lgtest_main -o /tmp/{file_path.stem} && /tmp/{file_path.stem}"
         
         return TestInfo(
             file_path=file_path,
@@ -482,38 +765,69 @@ Respond with JSON only:
         )
     
     def _discover_benchmarks(self):
-        """Discover benchmark files in the workspace (content-based)."""
+        """
+        Discover benchmark files in the workspace (content-based).
+        
+        Searches:
+        - Python files (.py)
+        - C++ files (.cpp, .cc, .cu, .hip) if config.include_cpp is True
+        - Uses configurable benchmark directories
+        """
         print("\n[3/4] Discovering benchmarks (content-based)...")
         
         seen_paths = set()
         
-        # Priority 1: Files matching kernel name with bench/perf keywords
+        # File extensions to search
+        extensions = [".py"]
+        if self.config.include_cpp:
+            extensions.extend([".cpp", ".cc", ".cu", ".hip", ".cxx"])
+        
+        # Priority 1: Files matching kernel name (exact or partial)
         if self.result.kernels:
             for kernel in self.result.kernels:
                 kernel_name = kernel.kernel_name
-                for py_file in self.workspace.rglob(f"*{kernel_name}*.py"):
-                    if self._should_skip_file(py_file) or py_file in seen_paths:
-                        continue
-                    bench_info = self._analyze_bench_file(py_file)
-                    if bench_info:
-                        self.result.benchmarks.append(bench_info)
-                        seen_paths.add(py_file)
+                
+                # Exact match search for all supported extensions
+                for ext in extensions:
+                    for bench_file in self.workspace.rglob(f"*{kernel_name}*{ext}"):
+                        if self._should_skip_file(bench_file) or bench_file in seen_paths:
+                            continue
+                        bench_info = self._analyze_bench_file(bench_file)
+                        if bench_info:
+                            self.result.benchmarks.append(bench_info)
+                            seen_paths.add(bench_file)
+                
+                # Partial match for benchmarks
+                parts = [p for p in kernel_name.split("_") if len(p) > 2]
+                if len(parts) >= 2:
+                    for ext in extensions:
+                        for bench_file in self.workspace.rglob(f"*bench*{ext}"):
+                            if self._should_skip_file(bench_file) or bench_file in seen_paths:
+                                continue
+                            fname_lower = bench_file.name.lower()
+                            matches = sum(1 for p in parts if p.lower() in fname_lower)
+                            if matches >= 2:
+                                bench_info = self._analyze_bench_file(bench_file)
+                                if bench_info:
+                                    bench_info.confidence = min(bench_info.confidence + 0.1, 1.0)
+                                    self.result.benchmarks.append(bench_info)
+                                    seen_paths.add(bench_file)
         
         # Priority 2: Files in benchmark directories or with bench/perf in name
-        bench_dirs = ["bench", "benchmark", "benchmarks", "op_benchmarks", "perf"]
-        for py_file in self.workspace.rglob("*.py"):
-            if self._should_skip_file(py_file) or py_file in seen_paths:
-                continue
-            
-            # Check if in bench directory or has bench/perf in name
-            in_bench_dir = any(d in py_file.parts for d in bench_dirs)
-            has_bench_name = "bench" in py_file.name.lower() or "perf" in py_file.name.lower()
-            
-            if in_bench_dir or has_bench_name:
-                bench_info = self._analyze_bench_file(py_file)
-                if bench_info:
-                    self.result.benchmarks.append(bench_info)
-                    seen_paths.add(py_file)
+        for ext in extensions:
+            for bench_file in self.workspace.rglob(f"*{ext}"):
+                if self._should_skip_file(bench_file) or bench_file in seen_paths:
+                    continue
+                
+                # Check if in bench directory or has bench/perf in name
+                in_bench_dir = any(d in bench_file.parts for d in self._bench_dirs)
+                has_bench_name = "bench" in bench_file.name.lower() or "perf" in bench_file.name.lower()
+                
+                if in_bench_dir or has_bench_name:
+                    bench_info = self._analyze_bench_file(bench_file)
+                    if bench_info:
+                        self.result.benchmarks.append(bench_info)
+                        seen_paths.add(bench_file)
         
         # Sort by confidence
         self.result.benchmarks.sort(key=lambda b: b.confidence, reverse=True)
@@ -526,7 +840,14 @@ Respond with JSON only:
             print(f"      Found {len(self.result.benchmarks)} potential benchmark(s)")
     
     def _analyze_bench_file(self, file_path: Path) -> Optional[BenchmarkInfo]:
-        """Analyze a file to determine if it's a benchmark (content-based)."""
+        """
+        Analyze a file to determine if it's a benchmark (content-based).
+        
+        Supports:
+        - Python: triton.testing.do_bench, torch.cuda.Event, custom
+        - C++: hipEventElapsedTime, cudaEventElapsedTime, std::chrono
+        - LLM fallback for uncertain cases
+        """
         try:
             content = file_path.read_text()
         except Exception:
@@ -534,10 +855,11 @@ Respond with JSON only:
         
         confidence = 0.0
         bench_type = "script"
+        is_cpp = file_path.suffix in [".cpp", ".cc", ".cu", ".hip", ".cxx"]
         
-        # Content-based scoring
-        for pattern, score in self.BENCH_CONTENT_KEYWORDS:
-            if re.search(pattern, content, re.IGNORECASE):
+        # Content-based scoring (same keywords work for both Python and C++)
+        for pattern, score in self._bench_keywords:
+            if re.search(pattern, content, re.IGNORECASE if not is_cpp else 0):
                 confidence += score
         
         # Filename bonus (lower priority than content)
@@ -550,17 +872,46 @@ Respond with JSON only:
                 confidence += 0.15
                 break
         
+        # LLM fallback for uncertain cases (0.3-0.6 confidence)
+        if 0.3 <= confidence <= 0.6 and self.use_llm:
+            llm_result = self._llm_analyze_file(file_path, "benchmark")
+            if llm_result and llm_result.get("is_benchmark"):
+                confidence = max(confidence, llm_result.get("confidence", 0.7))
+                if llm_result.get("command"):
+                    return BenchmarkInfo(
+                        file_path=file_path,
+                        bench_type="llm-detected",
+                        command=llm_result["command"],
+                        confidence=min(confidence, 1.0)
+                    )
+        
         # Must have minimum confidence to be considered a benchmark
         if confidence < 0.3:
             return None
         
-        # Determine benchmark type
-        if "pytest" in content and "benchmark" in content:
-            bench_type = "pytest"
-        elif "triton.testing.do_bench" in content:
-            bench_type = "triton"
-        
-        command = f"python {file_path}"
+        # Determine benchmark type and command
+        if not is_cpp:
+            if "pytest" in content and "benchmark" in content:
+                bench_type = "pytest"
+            elif "triton.testing.do_bench" in content:
+                bench_type = "triton"
+            command = f"python {file_path}"
+        else:
+            # C++ benchmark
+            if "hipEvent" in content:
+                bench_type = "hip"
+            elif "cudaEvent" in content:
+                bench_type = "cuda"
+            else:
+                bench_type = "cpp"
+            
+            # Look for build system
+            parent = file_path.parent
+            if (parent / "Makefile").exists():
+                command = f"make -C {parent} && ./{file_path.stem}"
+            else:
+                compiler = "hipcc" if file_path.suffix == ".hip" or "hip" in content.lower() else "nvcc"
+                command = f"{compiler} {file_path} -o /tmp/{file_path.stem} && /tmp/{file_path.stem}"
         
         return BenchmarkInfo(
             file_path=file_path,
@@ -571,10 +922,14 @@ Respond with JSON only:
     
     def _should_skip_file(self, file_path: Path) -> bool:
         """Check if a file should be skipped during discovery."""
+        # Default skip directories
         skip_dirs = {
             "__pycache__", ".git", ".venv", "venv", "node_modules",
-            "build", "dist", ".eggs", "*.egg-info"
+            "build", "dist", ".eggs", "site-packages", ".tox", ".pytest_cache"
         }
+        
+        # Add configured exclude directories
+        skip_dirs.update(self.config.exclude_dirs)
         
         for part in file_path.parts:
             if part in skip_dirs or part.endswith(".egg-info"):
@@ -690,7 +1045,8 @@ def discover(
     test_command: str = None,
     bench_command: str = None,
     interactive: bool = True,
-    use_llm: bool = False
+    use_llm: bool = False,
+    config: DiscoveryConfig = None
 ) -> DiscoveryResult:
     """
     Run discovery pipeline.
@@ -702,6 +1058,7 @@ def discover(
         bench_command: User-provided benchmark command
         interactive: Whether to prompt for confirmation
         use_llm: Whether to use LLM for smart analysis
+        config: Optional DiscoveryConfig for custom patterns
     
     Returns:
         DiscoveryResult with all discovered information
@@ -711,7 +1068,7 @@ def discover(
         kernel_path = Path(workspace)
         workspace = kernel_path.parent
     
-    pipeline = DiscoveryPipeline(workspace, use_llm=use_llm)
+    pipeline = DiscoveryPipeline(workspace, use_llm=use_llm, config=config)
     return pipeline.run(
         kernel_path=kernel_path,
         test_command=test_command,
