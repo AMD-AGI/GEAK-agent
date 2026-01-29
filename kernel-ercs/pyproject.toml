@@ -37,7 +37,8 @@ dev = [
 ]
 
 [project.scripts]
-kernel-ercs = "kernel_ercs.server:main"
+kernel-ercs-mcp = "kernel_ercs.server:main"
+kernel-ercs = "kernel_ercs.cli:main"
 
 [project.urls]
 Homepage = "https://github.com/amd/GEAK-agent"

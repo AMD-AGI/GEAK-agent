@@ -11,7 +11,8 @@ dependencies = [
 ]
 
 [project.scripts]
-automated-test-discovery = "automated_test_discovery.server:main"
+automated-test-discovery-mcp = "automated_test_discovery.server:main"
+test-discovery = "automated_test_discovery.cli:main"
 
 [build-system]
 requires = ["hatchling"]

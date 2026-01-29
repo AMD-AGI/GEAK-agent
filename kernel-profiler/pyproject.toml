@@ -30,7 +30,8 @@ dev = [
 ]
 
 [project.scripts]
-kernel-profiler = "kernel_profiler.server:main"
+kernel-profiler-mcp = "kernel_profiler.server:main"
+kernel-profiler = "kernel_profiler.cli:main"
 
 [project.urls]
 Repository = "https://github.com/amd/GEAK-agent"

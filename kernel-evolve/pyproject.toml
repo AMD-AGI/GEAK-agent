@@ -32,7 +32,8 @@ dev = [
 ]
 
 [project.scripts]
-kernel-evolve = "kernel_evolve.server:main"
+kernel-evolve-mcp = "kernel_evolve.server:main"
+kernel-evolve = "kernel_evolve.cli:main"
 
 [project.urls]
 Repository = "https://github.com/amd/GEAK-agent"
